@@ -17,7 +17,7 @@ Various astronomy scripts
     
 2. Download SDSS Catalog Data: `download_SDSS_catalog_withSciServer.ipynb`
 
-    - This code can only be run on SciServer \<https://apps.sciserver.org/compute/>, and cannot be run on your own machine.   
-    - To get access to the SciServer, You will have to create an account at \<https://apps.sciserver.org/login-portal/>.  
-    - Please follow the installation steps in the Example-Notebooks to be able to run your own codes \<https://github.com/sciserver/Example-Notebooks#installation>.
+    - This code can only be run on SciServer https://apps.sciserver.org/compute/, and cannot be run on your own machine.   
+    - To get access to the SciServer, You will have to create an account at https://apps.sciserver.org/login-portal/.  
+    - Please follow the installation steps in the Example-Notebooks to be able to run your own codes https://github.com/sciserver/Example-Notebooks#installation.
     - Once you create a persistent folder in `/Storage/<username>/persistent/`, upload this code to that folder. The script should work in this environment.
