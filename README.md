@@ -21,3 +21,6 @@ Various astronomy scripts
     - To get access to the SciServer, You will have to create an account at https://apps.sciserver.org/login-portal/.  
     - Please follow the installation steps in the Example-Notebooks to be able to run your own codes https://github.com/sciserver/Example-Notebooks#installation.
     - Once you create a persistent folder in `/Storage/<username>/persistent/`, upload this code to that folder. The script should work in this environment.
+    Additional Information:
+        - One of the main components of the code is using SQL to query the data we want. Here is a quick tutorial on how to use SQL: <https://www.w3schools.com/sql/>. 
+        - Description of each column in each SDSS Table can be found here <https://skyserver.sdss.org/dr14/en/help/docs/tabledesc.aspx>.
