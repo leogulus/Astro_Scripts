@@ -14,6 +14,13 @@ Various astronomy scripts
     Download jpeg: `python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4`
     
     Download FITS file: `python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits`
+
+
+    1.1 Fixed the order of FITS images in order to open with ds9
+    
+    Requirements: Need to install `aplpy` for this code to work. 
+    
+    `python decal_image_download_fits_fixed.py <outfilename_from_first_step.fits>`
     
 2. Download SDSS Catalog Data: `download_SDSS_catalog_withSciServer.ipynb`
 

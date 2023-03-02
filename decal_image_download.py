@@ -71,6 +71,7 @@ def decal_image(indx, ra, dec, name, redshift, fraction_size=1, fits=False):
             plt.savefig(filename, dpi=120)
             plt.close()
             os.remove('tmp.jpg')
+            print(f'output filename is {filename}')
         
         except: 
             print('No Data')
