@@ -1,0 +1,23 @@
+bin7
+86    3   apec       kT         keV      4.44932      +/-  0.780939
+175    3   apec       kT         keV      5.00000      = cl:p86
+264    3   apec       kT         keV      5.00000      = cl:p175
+353    3   apec       kT         keV      5.00000      = cl:p264
+442    3   apec       kT         keV      5.00000      = cl:p353
+531    3   apec       kT         keV      5.39060      +/-  1.28134
+620    3   apec       kT         keV      5.00000      = cl:p531
+709    3   apec       kT         keV      6.27463      +/-  0.859821
+798    3   apec       kT         keV      5.00000      = cl:p709
+887    3   apec       kT         keV      5.00000      = cl:p798
+976    3   apec       kT         keV      7.70905      +/-  1.45566
+1065    3   apec       kT         keV      5.00000      = cl:p976
+1154    3   apec       kT         keV      6.86936      +/-  1.05005
+1243    3   apec       kT         keV      5.00000      = cl:p1154
+1332    3   apec       kT         keV      7.07648      +/-  1.01077
+1421    3   apec       kT         keV      5.00000      = cl:p1332
+1510    3   apec       kT         keV      5.00000      = cl:p1421
+1599    3   apec       kT         keV      6.63208      +/-  1.22842
+1688    3   apec       kT         keV      5.00000      = cl:p1599
+1777    3   apec       kT         keV      5.00000      = cl:p1688
+1866    3   apec       kT         keV      5.00000      = cl:p1777
+1955    3   apec       kT         keV      5.00000      = cl:p1866
