@@ -11,4 +11,4 @@ Call: `python xray_binning_plot.py 'spt0417_xspec_kt_err.csv' 'spt0417_xspec_kt_
 Output:
 - One plot with all the binning 
 
-![plot1](https://github.com/leogulus/Astro_Scripts/xray_binning_plot/spt0417_xspec_kt_err_plot.jpg?raw=true)
+![plot1](https://github.com/leogulus/Astro_Scripts/blob/main/xray_binning_plot/spt0417_xspec_kt_err_plot.jpg?raw=true)
