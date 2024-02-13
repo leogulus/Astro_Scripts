@@ -40,14 +40,14 @@ def decal_image(indx, ra, dec, name, redshift, fraction_size=1, fits=False):
     redshift = np.nan if redshift == 0 else redshift
     size=int(2048/fraction_size); fraction0=fraction_size/2
     if fits:
-        filename = f'img_ix{indx:03}_annoted_{name}.fits'
+        filename = f'img_ix{indx:05}_annoted_{name}.fits'
         try:
             fetch_image_decal(ra, dec, size=size, fits=fits, filename=filename)
         except:
             print('No Data')
             pass
     else: 
-        filename = f'img_ix{indx:03}_annoted_{name}.jpg'
+        filename = f'img_ix{indx:05}_annoted_{name}.jpg'
         try:
             fetch_image_decal(ra, dec, size=size, fits=fits, filename='tmp.jpg')
             img = mpimg.imread('tmp.jpg')
