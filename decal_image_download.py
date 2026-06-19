@@ -53,7 +53,7 @@ def decal_image(indx, ra, dec, name, redshift, fraction_size=1, fits=False):
             img = mpimg.imread('tmp.jpg')
             fig=plt.figure(figsize=(10,10))
             imgplot = plt.imshow(img)
-            plt.scatter(size/2,size/2,marker='x', color='white', lw=0.5)
+            # plt.scatter(size/2,size/2,marker='x', color='white', lw=0.5)
 
             x=50/fraction0; y=140/fraction0
             plt.annotate("1 arcmin",(x+40,y-10/fraction0),color='white',fontsize=13)
@@ -61,10 +61,10 @@ def decal_image(indx, ra, dec, name, redshift, fraction_size=1, fits=False):
                 plt.annotate(f"{name}",(x,y-50/fraction0),color='white',fontsize=13)
                 dsize=0
             else:
-                plt.annotate(f"{name} z={redshift:.2f}",(x,y-50/fraction0),color='white',fontsize=13)
+                # plt.annotate(f"{name} z={redshift:.2f}",(x,y-50/fraction0),color='white',fontsize=13)
                 dsize=(cosmo.angular_diameter_distance(redshift)*(1*u.arcmin).to(u.radian).value).to(u.kpc)
             plt.annotate(f"{dsize:.0f}",(x+40,y+17/fraction0),color='white',fontsize=13)
-            plt.annotate("", xy=(x, y), xytext=(x+229, y), arrowprops=dict(arrowstyle="-", color='white'))
+            plt.annotate("", xy=(x, y+50), xytext=(x+229, y+50), arrowprops=dict(arrowstyle="-", color='white'))
 
             format_axes(fig)
             plt.tight_layout()

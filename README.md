@@ -3,7 +3,7 @@ Various astronomy scripts
 
 1. Download DECalS Image Script: `decal_image_download.py`
 
-    Downloading optical image from DeCALS survers ([https://www.legacysurvey.org/decamls/](https://www.legacysurvey.org/decamls/))
+    Downloading optical image from DeCALS servers ([https://www.legacysurvey.org/decamls/](https://www.legacysurvey.org/decamls/))
 
     `python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_size>`
 
@@ -31,3 +31,40 @@ Various astronomy scripts
     Additional Information:
         - One of the main components of the code is using SQL to query the data we want. Here is a quick tutorial on how to use SQL: <https://www.w3schools.com/sql/>. 
         - Description of each column in each SDSS Table can be found here <https://skyserver.sdss.org/dr14/en/help/docs/tabledesc.aspx>.
+
+3. Download LS DR10 Photometry Script: ls_dr10_catalog_download.py
+
+    - This script queries LS DR10 Tractor catalog via NOIRLab TAP service and extracts multi-band photometry (optical + WISE) within a sky region.
+    Documentation: https://datalab.noirlab.edu/tap
+
+    `python ls_dr10_catalog_download.py --ra <ra> --dec <dec> --name <name> --radius <radius>`
+
+    Arguments
+    * <ra>: Right Ascension of target center (in degrees)
+    * <dec>: Declination of target center (in degrees)
+    * <name>: Label for output file name
+    * <radius>: Search radius in degrees (default = 0.0166667 ≈ 1 arcmin)
+
+    Output
+    * CSV file containing:
+        * Astrometry (RA, Dec)
+        * Optical + WISE fluxes (dereddened)
+        * Flux inverse variance
+        * Galactic transmission factors
+        * Morphology and quality flags
+
+    Query sources around a cluster center:
+    `python ls_dr10_catalog_download.py --ra 150.11632 --dec 2.20583 --name clusterA --radius 0.02`
+
+    SED Photometry (LS DR10)
+    
+    For each band (g, r, i, z, w1, w2, …):
+    * Use dereddened flux for SED
+        * dered_flux = flux / mw_transmission
+    * Flux error
+        * sigma_flux = 1 / sqrt(flux_ivar)
+        * sigma_dered_flux = sigma_flux / mw_transmission
+    * Magnitude
+        * mag = 22.5 - 2.5 * log10(dered_flux)
+    * Magnitude error
+        * mag_err = (2.5 / ln(10)) / (flux * sqrt(flux_ivar))
