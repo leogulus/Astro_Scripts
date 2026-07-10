@@ -183,11 +183,44 @@ Queries the SPARCL catalog for DESI spectra around one sky position or a batch o
 
 ### Requirements
 
-* `numpy`
-* `matplotlib`
-* `astropy`
-* `sparcl`
-* `dl`
+The DESI script is heavier than the other scripts in this repository because it depends on two astronomy-specific client packages:
+
+* `sparclclient`: provides `from sparcl.client import SparclClient`
+* `astro-datalab`: provides `from dl import queryClient as qc`
+
+These packages can be harder to install into an existing Python environment because they bring in a fairly specific scientific Python stack.
+
+At the time of writing:
+
+* `astro-datalab 2.24.0` declares `Requires-Python: >=3.9,<3.12`
+* `astro-datalab 2.24.0` also pins versions of core packages such as `numpy`, `astropy`, `pandas`, `matplotlib`, `scipy`, `specutils`, `pyvo`, and `pycurl`
+* `sparclclient 1.3.0` depends on `numpy`, `pandas`, `requests`, `specutils`, `spectres`, and `pyjwt`
+
+Because of that, the safest approach is to install this script in its own clean conda environment instead of mixing it with unrelated packages.
+
+### Recommended Conda Setup
+
+Recommended starting point:
+
+```bash
+conda create -n desi python=3.11 pip
+conda activate desi
+python -m pip install --upgrade pip
+python -m pip install astro-datalab==2.24.0 sparclclient==1.3.0
+```
+
+A tested working environment on this project used:
+
+* `Python 3.11.15`
+* `astro-datalab 2.24.0`
+* `sparclclient 1.3.0`
+* `numpy 1.26.3`
+* `astropy 5.3.4`
+* `pandas 2.1.4`
+* `matplotlib 3.8.4`
+* `specutils 1.13.0`
+
+If you already have a complicated astronomy or machine-learning environment, it is strongly recommended not to install these DESI dependencies into that same environment.
 
 ### Single-Target Usage
 
