@@ -15,10 +15,15 @@ A collection of Python scripts and notebooks for retrieving astronomical imaging
 
 Downloads optical images directly from the [DECaLS servers](https://www.legacysurvey.org/decamls/).
 
+### Requirements
+
+* `numpy`
+* `matplotlib`
+* `astropy`
+
 ### Usage
 ```bash
 python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_size>
-
 ```
 
 ### Arguments
@@ -29,35 +34,41 @@ python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_si
 * `<name>`: Output file name/prefix.
 * `<redshift>`: Target redshift. Set to `0` if unknown.
 * `<fraction_size>`: Resolution scaling factor.
-  * `1` = 2048 px
-  * `2` = 2048 / 2 px
-  * `4` = 2048 / 4 px *(Increase value to zoom in and reduce file size)*
+* `--fits`: Download a FITS cube instead of an annotated JPEG.
+* `--keep-raw-fits`: Keep the original downloaded FITS file alongside the reordered output.
+
+`fraction_size` examples:
+`1` = 2048 px
+`2` = 2048 / 2 px
+`4` = 2048 / 4 px *(Increase value to zoom in and reduce file size)*
 
 ### Examples
 
 * **Download JPEG:**
 ```bash
 python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4
-
 ```
-
 
 * **Download FITS file:**
 ```bash
 python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits
-
 ```
 
-### 1.1 FITS Header Alignment (`decal_image_download_fits_fixed.py`)
-
-Fixes the axis ordering of downloaded DECaLS FITS images so they can be parsed correctly by SAOImage DS9.
-
-* **Requirements:** `aplpy`
-* **Usage:**
+* **Download FITS file and keep the original raw download too:**
 ```bash
-python decal_image_download_fits_fixed.py <outfilename_from_first_step.fits>
-
+python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits --keep-raw-fits
 ```
+
+### Output
+
+* JPEG mode writes an annotated image named like `img_ix00001_annoted_test.jpg`
+* FITS mode writes a reordered FITS cube named like `img_ix00001_annoted_test.fits`
+
+The FITS output is already reordered for easier use in SAOImage DS9, so no second fix-up script is needed.
+
+### DS9 Note
+
+If you want to open the FITS cube in SAOImage DS9 as an RGB image, first go to `Frame -> RGB`, then choose `File -> Open As -> RGB Cube`.
 
 ---
 
@@ -75,7 +86,7 @@ A Jupyter Notebook designed to query and download SDSS catalog data using the Sc
 3. Create a persistent directory under `/Storage/<username>/persistent/`.
 4. Upload this notebook into that folder and run it within a SciServer Compute container.
 
-### Useful Resources
+### Useful Resources 
 
 * **SQL Querying:** Data retrieval is handled via SQL. See this [W3Schools SQL Tutorial](https://www.w3schools.com/sql/) for a quick refresher.
 * **SDSS Schema:** Column descriptions for all SDSS database tables are available at the [SkyServer DR14 Table Descriptions](https://skyserver.sdss.org/dr14/en/help/docs/tabledesc.aspx).
@@ -84,16 +95,24 @@ A Jupyter Notebook designed to query and download SDSS catalog data using the Sc
 
 ## 3. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)
 
-Queries the Legacy Surveys DR10 Tractor catalog via the [NOIRLab TAP service](https://datalab.noirlab.edu/tap) to extract multi-band photometry (optical + WISE) within a user-defined sky region.
+Queries the Legacy Surveys DR10 Tractor catalog via the [NOIRLab TAP service](https://datalab.noirlab.edu/tap) to extract multi-band photometry (optical + WISE) within a user-defined sky box. 
 
 More Information about LS DR10: https://datalab.noirlab.edu/data/legacy-surveys
+
+### Requirements
+
+* `astroquery`
+
+### Search Method
+
+This script intentionally performs a fast RA/Dec box search instead of a true cone search.
+The returned table may include some sources near the corners of the box that fall outside a circular radius, which can be filtered manually afterward if needed.
 
 
 ### Usage
 
 ```bash
-python ls_dr10_catalog_download.py --ra <ra> --dec <dec> --name <name> --radius <radius>
-
+python ls_dr10_catalog_download.py --ra <ra> --dec <dec> --name <name> --radius <radius> --output-dir <output_dir>
 ```
 
 ### Arguments
@@ -101,7 +120,8 @@ python ls_dr10_catalog_download.py --ra <ra> --dec <dec> --name <name> --radius 
 * `--ra`: Right Ascension of the target center (in degrees).
 * `--dec`: Declination of the target center (in degrees).
 * `--name`: Label for the output CSV file.
-* `--radius`: Search radius in degrees *(default: `0.0166667`, approximately 1 arcmin)*.
+* `--radius`: Half-width of the search box in degrees *(default: `0.0166667`, approximately 1 arcmin)*.
+* `--output-dir`: Directory where the CSV file will be written *(default: current directory)*.
 
 ### Example
 
@@ -109,8 +129,23 @@ Query sources around a target galaxy cluster:
 
 ```bash
 python ls_dr10_catalog_download.py --ra 150.11632 --dec 2.20583 --name clusterA --radius 0.02
-
 ```
+
+Save the result to a specific directory:
+
+```bash
+python ls_dr10_catalog_download.py --ra 150.11632 --dec 2.20583 --name clusterA --radius 0.02 --output-dir output_catalogs
+```
+
+### Output
+
+The script writes a CSV file named like:
+
+```text
+ls_dr10_<name>_ra<ra>_dec<dec>_r<radius>.csv
+```
+
+It also prints the RA/Dec bounds of the search box and the number of sources returned.
 
 ### Output Columns
 
@@ -137,5 +172,4 @@ mag = 22.5 - 2.5 * log10(dered_flux)
 
 # 4. Magnitude error
 mag_err = (2.5 / ln(10)) / (flux * sqrt(flux_ivar))
-
 ```
