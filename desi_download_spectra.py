@@ -1,85 +1,87 @@
 #!/usr/bin/env python3
-"""
-download_desi_spectra.py
+"""Download DESI/SPARCL spectra for one target or a batch of targets."""
 
-Download and plot DESI/SPARCL spectra within a cone centered on a given
-(RA, Dec) position.
+from __future__ import annotations
 
-Usage
------
-Basic usage:
-    python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02
-
-Specify an output directory:
-    python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --output clstr01
-
-Arguments
----------
---ra
-    Right Ascension of the search center in decimal degrees.
-
---dec
-    Declination of the search center in decimal degrees.
-
---radius
-    Cone search radius in decimal degrees.
-
---output
-    Output directory (default: desi_output).
-
-Outputs
--------
-The script creates the output directory and saves:
-
-    object_catalog.csv
-        Catalog of all objects returned by the cone search.
-
-    spectra.pkl
-        Pickled SPARCL/specutils object returned by `client.retrieve()`.
-
-    spectrum_<sparcl_id>.png
-        One annotated spectrum plot for each downloaded object.
-
-Dependencies
-------------
-Required Python packages:
-
-    numpy
-    matplotlib
-    astropy
-    sparcl
-    dl
-
-Example
--------
-$ python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --output clstr01
-"""
-
-import os
 import argparse
-import pandas as pd
-
-import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+import csv
+import math
 from pathlib import Path
 
-from astropy.convolution import convolve, Gaussian1DKernel
-from dl import queryClient as qc
-from sparcl.client import SparclClient
+import matplotlib.pyplot as plt
+import numpy as np
+from astropy.convolution import Gaussian1DKernel, convolve
 
-client = SparclClient()
+DEFAULT_DATA_RELEASE = "DESI-DR1"
+DEFAULT_LIMIT = 1000
+DEFAULT_OUTPUT_DIR = "desi_output"
+DEFAULT_SMOOTH_SIGMA = 5.0
+SENTINEL_FILENAME = "download_complete.txt"
+CATALOG_FILENAME = "object_catalog.csv"
 
-def cone_query(
-    ra0: float,
-    dec0: float,
-    radius: float,
-    table: str = "sparcl.main",
-    extra_where: str = "data_release='DESI-DR1'",
-    limit: int = 1000,
-):
-    """Perform a cone search in the SPARCL catalog."""
 
+def positive_float(value: str) -> float:
+    """Parse a positive float for argparse."""
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
+def dec_degrees(value: str) -> float:
+    """Parse a declination value in degrees."""
+    parsed = float(value)
+    if not -90 <= parsed <= 90:
+        raise argparse.ArgumentTypeError("declination must be between -90 and 90 degrees")
+    return parsed
+
+
+def metadata_value(meta, key: str, index: int):
+    """Return a metadata value for one spectrum, handling array-like entries."""
+    value = meta.get(key)
+    if value is None:
+        return None
+    try:
+        return value[index]
+    except (TypeError, KeyError, IndexError):
+        return value
+
+
+def default_lines(include_absorption: bool) -> dict[str, float]:
+    """Return rest-frame spectral lines to overlay on plots."""
+    lines = {
+        "[O II]": 3727.0,
+        "Hbeta": 4861.33,
+        "[O III]": 5006.84,
+        "Halpha": 6562.80,
+        "[N II]": 6583.45,
+        "[S II]": 6716.44,
+    }
+
+    if include_absorption:
+        lines.update(
+            {
+                "Ca K": 3933.66,
+                "Ca H": 3968.47,
+                "Hdelta": 4101.74,
+                "Hgamma": 4340.47,
+                "Mg b": 5175.27,
+                "Na D": 5895.92,
+            }
+        )
+
+    return lines
+
+
+def cone_query_sql(
+    ra_deg: float,
+    dec_deg: float,
+    radius_deg: float,
+    table: str,
+    extra_where: str,
+    limit: int,
+) -> str:
+    """Build the SPARCL cone-search SQL query."""
     cols = [
         "sparcl_id",
         "specid",
@@ -91,140 +93,154 @@ def cone_query(
         "data_release",
     ]
 
-    cosdec = max(np.cos(np.radians(dec0)), 1e-6)
-    ra_width = radius / cosdec
-    ra_min = ra0 - ra_width
-    ra_max = ra0 + ra_width
-    dec_min = dec0 - radius
-    dec_max = dec0 + radius
+    cos_dec = max(np.cos(np.radians(dec_deg)), 1e-6)
+    ra_width = radius_deg / cos_dec
+    ra_min = ra_deg - ra_width
+    ra_max = ra_deg + ra_width
+    dec_min = dec_deg - radius_deg
+    dec_max = dec_deg + radius_deg
 
-    sql = f"""
+    return f"""
     SELECT {", ".join(cols)}
     FROM {table}
     WHERE
-        ra BETWEEN {ra_min} AND {ra_max}
-        AND dec BETWEEN {dec_min} AND {dec_max}
+        ra BETWEEN {ra_min:.10f} AND {ra_max:.10f}
+        AND dec BETWEEN {dec_min:.10f} AND {dec_max:.10f}
         AND acos(
-            sin(radians(dec))*sin(radians({dec0})) +
-            cos(radians(dec))*cos(radians({dec0}))*
-            cos(radians(ra-{ra0}))
-        ) <= radians({radius})
+            sin(radians(dec))*sin(radians({dec_deg:.10f})) +
+            cos(radians(dec))*cos(radians({dec_deg:.10f}))*
+            cos(radians(ra-{ra_deg:.10f}))
+        ) <= radians({radius_deg:.10f})
         AND {extra_where}
     LIMIT {limit}
     """
 
+
+def cone_query(
+    ra_deg: float,
+    dec_deg: float,
+    radius_deg: float,
+    *,
+    table: str,
+    data_release: str,
+    limit: int,
+):
+    """Run the SPARCL cone search and return a pandas DataFrame."""
+    from dl import queryClient as qc
+
+    sql = cone_query_sql(
+        ra_deg=ra_deg,
+        dec_deg=dec_deg,
+        radius_deg=radius_deg,
+        table=table,
+        extra_where=f"data_release='{data_release}'",
+        limit=limit,
+    )
     return qc.query(sql=sql, fmt="pandas")
 
 
-def get_default_lines(include_absorption=False):
-    """Return default spectral lines for plotting."""
+def create_sparcl_client():
+    """Create the SPARCL API client lazily."""
+    from sparcl.client import SparclClient
 
-    lines = {
-        "[O II]": 3727.0,
-        "Hβ": 4861.33,
-        "[O III]": 5006.84,
-        "Hα": 6562.80,
-        "[N II]": 6583.45,
-        "[S II]": 6716.44,
-    }
+    return SparclClient()
 
-    if include_absorption:
-        lines.update(
-            {
-                "Ca K": 3933.66,
-                "Ca H": 3968.47,
-                "Hδ": 4101.74,
-                "Hγ": 4340.47,
-                "Mg b": 5175.27,
-                "Na D": 5895.92,
-            }
-        )
 
-    return lines
-
-def meta_value(meta, key, idx):
-    value = meta.get(key)
-    if value is None:
-        return None
+def safe_float(value, default: float = 0.0) -> float:
+    """Convert a metadata value to float when possible."""
     try:
-        return value[idx]
-    except (TypeError, KeyError, IndexError):
-        return value
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
-def save_spectrum(results, idx, output_dir):
-    """Save a single DESI spectrum to a compressed NumPy file."""
 
-    sid = results.meta["sparcl_id"][idx]
+def build_catalog_lookup(found) -> dict[str, dict[str, object]]:
+    """Build a lookup of catalog rows keyed by SPARCL ID."""
+    lookup: dict[str, dict[str, object]] = {}
+    for row in found.to_dict(orient="records"):
+        sparcl_id = str(row["sparcl_id"])
+        lookup[sparcl_id] = row
+    return lookup
 
-    def get_meta(key):
+
+def save_spectrum(results, index: int, output_dir: Path) -> Path:
+    """Save one spectrum as a compressed NumPy archive."""
+    sparcl_id = results.meta["sparcl_id"][index]
+
+    def array_meta(key: str):
         value = results.meta.get(key)
         if value is None:
             return None
-        return np.asarray(value[idx])
+        return np.asarray(value[index])
 
-    outfile = os.path.join(output_dir, f"spectrum_{sid}.npz")
-
+    output_path = output_dir / f"spectrum_{sparcl_id}.npz"
     np.savez(
-        outfile,
+        output_path,
         wavelength=np.asarray(results.spectral_axis),
-        flux=np.asarray(results.flux[idx]),
-        model=get_meta("model"),
-        ivar=get_meta("ivar"),
-        mask=get_meta("mask"),
-        wave_sigma=get_meta("wave_sigma"),
-        sparcl_id=sid,
-        redshift = meta_value(results.meta, "redshift", idx),
-        specid = meta_value(results.meta, "specid", idx),
-        spectype = meta_value(results.meta, "spectype", idx),
-        ra = meta_value(results.meta, "ra", idx),
-        dec = meta_value(results.meta, "dec", idx),
+        flux=np.asarray(results.flux[index]),
+        model=array_meta("model"),
+        ivar=array_meta("ivar"),
+        mask=array_meta("mask"),
+        wave_sigma=array_meta("wave_sigma"),
+        sparcl_id=sparcl_id,
+        redshift=metadata_value(results.meta, "redshift", index),
+        specid=metadata_value(results.meta, "specid", index),
+        spectype=metadata_value(results.meta, "spectype", index),
+        ra=metadata_value(results.meta, "ra", index),
+        dec=metadata_value(results.meta, "dec", index),
     )
+    return output_path
 
-    return outfile
 
 def plot_spectrum(
-    record,
-    idx,
-    output_dir,
-    show_model=False,
-    show_smooth=True,
-    smooth_sigma=5,
-    include_absorption=True,
-):
-    sid = record.meta["sparcl_id"][idx]
-    outfile = os.path.join(output_dir, f"spectrum_{sid}.png")
+    results,
+    index: int,
+    output_dir: Path,
+    catalog_lookup: dict[str, dict[str, object]],
+    *,
+    show_model: bool,
+    show_smooth: bool,
+    smooth_sigma: float,
+    include_absorption: bool,
+) -> Path:
+    """Plot one downloaded spectrum and save it to disk."""
+    sparcl_id = results.meta["sparcl_id"][index]
+    output_path = output_dir / f"spectrum_{sparcl_id}.png"
 
-    wave = np.asarray(record.spectral_axis)
-    flux = np.asarray(record.flux[idx]) if np.ndim(record.flux) != 1 else record.flux
-    wave_unit = getattr(record.spectral_axis, "unit", "")
-    flux_unit = getattr(record.flux, "unit", "")
+    wavelength = np.asarray(results.spectral_axis)
+    flux = np.asarray(results.flux[index]) if np.ndim(results.flux) != 1 else np.asarray(results.flux)
+    wave_unit = getattr(results.spectral_axis, "unit", "")
+    flux_unit = getattr(results.flux, "unit", "")
 
-    meta = {k: meta_value(record.meta, k, idx) for k in record.meta}
-    z = meta.get("redshift", 0.0)
+    metadata = {key: metadata_value(results.meta, key, index) for key in results.meta}
+    catalog_row = catalog_lookup.get(str(sparcl_id), {})
+    redshift = safe_float(metadata.get("redshift"), default=0.0)
+    ra = safe_float(metadata.get("ra"), default=safe_float(catalog_row.get("ra"), default=float("nan")))
+    dec = safe_float(metadata.get("dec"), default=safe_float(catalog_row.get("dec"), default=float("nan")))
 
     plt.figure(figsize=(10, 5))
-    plt.plot(wave, flux, alpha=0.3, lw=0.8, label="Observed")
+    plt.plot(wavelength, flux, alpha=0.3, lw=0.8, label="Observed")
 
     if show_smooth:
         kernel = Gaussian1DKernel(smooth_sigma)
-        smooth = convolve(flux, kernel, boundary="extend")
-        plt.plot(wave, smooth, lw=1.2, label="Smoothed")
+        smoothed = convolve(flux, kernel, boundary="extend")
+        plt.plot(wavelength, smoothed, lw=1.2, label="Smoothed")
 
-    if show_model and "model" in record.meta:
-        model = np.asarray(record.meta["model"][idx])
+    if show_model and "model" in results.meta:
+        model = np.asarray(results.meta["model"][index])
         if model.ndim > 1:
             model = model[0]
-        plt.plot(wave, model, lw=1.5, label="Model")
+        plt.plot(wavelength, model, lw=1.5, label="Model")
 
     ymax = plt.ylim()[1]
-
-    for name, lam in get_default_lines(include_absorption).items():
-        obs = lam * (1 + z)
-        plt.axvline(obs, linestyle="--", alpha=0.3)
+    for line_name, rest_wavelength in default_lines(include_absorption).items():
+        observed_wavelength = rest_wavelength * (1 + redshift)
+        plt.axvline(observed_wavelength, linestyle="--", alpha=0.3)
         plt.text(
-            obs,
+            observed_wavelength,
             ymax * 0.95,
-            name,
+            line_name,
             rotation=90,
             fontsize=8,
             ha="right",
@@ -236,57 +252,53 @@ def plot_spectrum(
     plt.xlabel(wave_label)
     plt.ylabel(flux_label)
 
+    title_ra = f"{ra:.5f}" if math.isfinite(ra) else "unknown"
+    title_dec = f"{dec:.5f}" if math.isfinite(dec) else "unknown"
     plt.title(
-        f"SPARCL ID = {meta['sparcl_id']}\n"
-        f"z = {z:.4f}, "
-        f"RA = {meta['ra']:.5f}, "
-        f"Dec = {meta['dec']:.5f}"
+        f"SPARCL ID = {metadata.get('sparcl_id', sparcl_id)}\n"
+        f"z = {redshift:.4f}, RA = {title_ra}, Dec = {title_dec}"
     )
 
     plt.legend(frameon=False)
     plt.tight_layout()
-    plt.savefig(outfile, dpi=200)
+    plt.savefig(output_path, dpi=200)
     plt.close()
+    return output_path
 
-    return outfile
 
-def get_meta_array(meta, key, index):
-    value = meta.get(key)
-    if value is None:
-        return None
-    return np.asarray(value[index])
+def read_targets_csv(csv_path: Path) -> list[dict[str, str]]:
+    """Read batch targets from a CSV file."""
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"CSV file not found: {csv_path}\n"
+            "Provide a valid path to a CSV with columns: name, ra, dec, radius."
+        )
 
-def process_target(ra,dec,radius,output_dir,target_index=1,n_targets=1):
-    output_dir_p = Path(output_dir)
-    sentinel = output_dir_p / "download_complete.txt"
-    
-    if output_dir_p.exists() and sentinel.exists():
-        print(f"Skipping {output_dir_p}: already exists.")
-        return
-    
-    output_dir_p.mkdir(parents=True, exist_ok=True)
+    if not csv_path.is_file():
+        raise ValueError(f"CSV path is not a file: {csv_path}")
 
-    print(f"\n=== Target {target_index}/{n_targets}: "
-        f"{output_dir} ===")
-    print(f"RA={ra:.6f}, Dec={dec:.6f}, Radius={radius:.4f}")
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError("CSV file is empty or missing a header row")
 
-    found = cone_query(ra, dec, radius)
+        required = {"name", "ra", "dec", "radius"}
+        missing = required - set(reader.fieldnames)
+        if missing:
+            raise ValueError(f"CSV file is missing required columns: {sorted(missing)}")
 
-    if len(found) == 0:
-        print("  No objects found.")
-        return
+        return list(reader)
 
-    catalog_file = os.path.join(output_dir, "object_catalog.csv")
-    found.to_csv(catalog_file, index=False)
 
-    include = [
+def include_fields(show_model: bool) -> list[str]:
+    """Return SPARCL fields to request for retrieval."""
+    fields = [
         "sparcl_id",
         "specid",
         "data_release",
         "redshift",
         "flux",
         "wavelength",
-        "model",
         "ivar",
         "mask",
         "spectype",
@@ -294,101 +306,241 @@ def process_target(ra,dec,radius,output_dir,target_index=1,n_targets=1):
         "dec",
         "wave_sigma",
     ]
+    if show_model:
+        fields.append("model")
+    return fields
 
-    ids = list(found["sparcl_id"])
 
-    results = client.retrieve(
-        uuid_list=ids,
-        include=include,
-        fmt="specutils",
-    )
+def process_target(
+    *,
+    client,
+    ra_deg: float,
+    dec_deg: float,
+    radius_deg: float,
+    output_dir: Path,
+    target_label: str,
+    target_index: int,
+    total_targets: int,
+    table: str,
+    data_release: str,
+    limit: int,
+    overwrite: bool,
+    save_plots: bool,
+    show_model: bool,
+    show_smooth: bool,
+    smooth_sigma: float,
+    include_absorption: bool,
+) -> None:
+    """Download all spectra for one target and save outputs."""
+    sentinel_path = output_dir / SENTINEL_FILENAME
 
-    for i in tqdm(range(len(ids)), desc=output_dir_p.name):
-        save_spectrum(results, i, output_dir_p)
-        plot_spectrum(results, i, output_dir_p)
+    if output_dir.exists() and sentinel_path.exists() and not overwrite:
+        print(f"Skipping {output_dir}: already completed.")
+        return
 
-    sentinel.touch()
-    print(f"  Saved {len(ids)} spectra.")
-    
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-def main():
+    print(f"\n=== Target {target_index}/{total_targets}: {target_label} ===")
+    print(f"RA={ra_deg:.6f}, Dec={dec_deg:.6f}, Radius={radius_deg:.4f}")
 
+    try:
+        found = cone_query(
+            ra_deg,
+            dec_deg,
+            radius_deg,
+            table=table,
+            data_release=data_release,
+            limit=limit,
+        )
+    except Exception as exc:
+        raise SystemExit(f"Cone search failed for {target_label}: {exc}") from exc
+
+    if len(found) == 0:
+        print("  No objects found.")
+        return
+
+    catalog_path = output_dir / CATALOG_FILENAME
+    found.to_csv(catalog_path, index=False)
+
+    sparcl_ids = list(found["sparcl_id"])
+    catalog_lookup = build_catalog_lookup(found)
+    try:
+        results = client.retrieve(
+            uuid_list=sparcl_ids,
+            include=include_fields(show_model),
+            fmt="specutils",
+        )
+    except Exception as exc:
+        raise SystemExit(f"Spectrum retrieval failed for {target_label}: {exc}") from exc
+
+    for index, sparcl_id in enumerate(sparcl_ids, start=1):
+        save_spectrum(results, index - 1, output_dir)
+        if save_plots:
+            plot_spectrum(
+                results,
+                index - 1,
+                output_dir,
+                catalog_lookup,
+                show_model=show_model,
+                show_smooth=show_smooth,
+                smooth_sigma=smooth_sigma,
+                include_absorption=include_absorption,
+            )
+        if index == 1 or index == len(sparcl_ids) or index % 25 == 0:
+            print(f"  Processed {index}/{len(sparcl_ids)} spectra (latest SPARCL ID: {sparcl_id})")
+
+    sentinel_path.touch()
+    print(f"  Saved {len(sparcl_ids)} spectra to {output_dir}")
+
+
+def parse_args() -> argparse.Namespace:
+    """Define and parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description=(
-            "Query DESI/SPARCL spectra around a sky position, "
-            "download all matching spectra, and save plots."
+            "Query DESI/SPARCL spectra around a sky position, download all matching "
+            "spectra, and optionally save diagnostic plots."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples
 --------
 python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --output clstr01
-python desi_download_spectra.py --csv file.csv
+python desi_download_spectra.py --csv targets.csv
+python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --no-plots
 """,
     )
-
-    parser.add_argument(
-        "--ra",
-        type=float,
-        help="Right Ascension in decimal degrees.",
-    )
-
-    parser.add_argument(
-        "--dec",
-        type=float,
-        help="Declination in decimal degrees.",
-    )
-
-    parser.add_argument(
-        "--radius",
-        type=float,
-        help="Cone search radius in degrees.",
-    )
-
+    parser.add_argument("--ra", type=float, help="Right ascension in decimal degrees.")
+    parser.add_argument("--dec", type=dec_degrees, help="Declination in decimal degrees.")
+    parser.add_argument("--radius", type=positive_float, help="Cone search radius in degrees.")
     parser.add_argument(
         "--output",
-        default="desi_output",
-        help="Output directory (default: desi_output).",
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Output directory for a single target (default: {DEFAULT_OUTPUT_DIR}).",
     )
-
     parser.add_argument(
         "--csv",
-        type=str,
-        help="CSV file containing columns: name, ra, dec, radius.",
+        type=Path,
+        help=(
+            "Run the script in batch mode using a CSV file instead of a single --ra/--dec/--radius target. "
+            "The CSV must contain columns: name, ra, dec, radius. An optional output column is also supported."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help=f"Maximum number of spectra returned per target (default: {DEFAULT_LIMIT}).",
+    )
+    parser.add_argument(
+        "--data-release",
+        default=DEFAULT_DATA_RELEASE,
+        help=f"SPARCL data release filter (default: {DEFAULT_DATA_RELEASE}).",
+    )
+    parser.add_argument(
+        "--table",
+        default="sparcl.main",
+        help="SPARCL table name to query (default: sparcl.main).",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Reprocess a target even if download_complete.txt already exists.",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip PNG spectrum plots and save only .npz files plus the object catalog.",
+    )
+    parser.add_argument(
+        "--show-model",
+        action="store_true",
+        help="Overlay the SPARCL model spectrum on each plot when available.",
+    )
+    parser.add_argument(
+        "--no-smooth",
+        action="store_true",
+        help="Disable the smoothed spectrum overlay in plots.",
+    )
+    parser.add_argument(
+        "--smooth-sigma",
+        type=positive_float,
+        default=DEFAULT_SMOOTH_SIGMA,
+        help=f"Gaussian smoothing sigma in pixels for plots (default: {DEFAULT_SMOOTH_SIGMA}).",
+    )
+    parser.add_argument(
+        "--no-absorption-lines",
+        action="store_true",
+        help="Do not overlay common absorption lines on plots.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.limit <= 0:
+        raise SystemExit("--limit must be greater than 0")
+
+    save_plots = not args.no_plots
+    show_smooth = not args.no_smooth
+    include_absorption = not args.no_absorption_lines
+
+    if args.csv:
+        csv_path = args.csv.expanduser().resolve()
+        try:
+            targets = read_targets_csv(csv_path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+
+        client = create_sparcl_client()
+        total_targets = len(targets)
+        for target_index, row in enumerate(targets, start=1):
+            output_name = row.get("output") or row["name"]
+            process_target(
+                client=client,
+                ra_deg=float(row["ra"]),
+                dec_deg=float(row["dec"]),
+                radius_deg=float(row["radius"]),
+                output_dir=Path(str(output_name)),
+                target_label=str(row["name"]),
+                target_index=target_index,
+                total_targets=total_targets,
+                table=args.table,
+                data_release=args.data_release,
+                limit=args.limit,
+                overwrite=args.overwrite,
+                save_plots=save_plots,
+                show_model=args.show_model,
+                show_smooth=show_smooth,
+                smooth_sigma=args.smooth_sigma,
+                include_absorption=include_absorption,
+            )
+        return
+
+    if args.ra is None or args.dec is None or args.radius is None:
+        raise SystemExit("--ra, --dec, and --radius are required unless --csv is provided.")
+
+    client = create_sparcl_client()
+    process_target(
+        client=client,
+        ra_deg=args.ra,
+        dec_deg=args.dec,
+        radius_deg=args.radius,
+        output_dir=Path(args.output),
+        target_label=args.output,
+        target_index=1,
+        total_targets=1,
+        table=args.table,
+        data_release=args.data_release,
+        limit=args.limit,
+        overwrite=args.overwrite,
+        save_plots=save_plots,
+        show_model=args.show_model,
+        show_smooth=show_smooth,
+        smooth_sigma=args.smooth_sigma,
+        include_absorption=include_absorption,
     )
 
-    args = parser.parse_args()
-    
-    if args.csv:
-        targets = pd.read_csv(args.csv)
-
-        required = {"name", "ra", "dec", "radius"}
-        missing = required - set(targets.columns)
-        if missing:
-            raise ValueError(
-                f"CSV file is missing required columns: {sorted(missing)}"
-            )
-
-        n_targets = len(targets)
-
-        for i, (_, row) in enumerate(targets.iterrows(), start=1):
-            process_target(
-                ra=float(row["ra"]),
-                dec=float(row["dec"]),
-                radius=float(row["radius"]),
-                output_dir=str(row["name"]),
-                target_index=i,
-                n_targets=n_targets,
-            )
-    else:
-        if args.ra is None or args.dec is None or args.radius is None:
-            parser.error("--ra, --dec, and --radius are required unless --csv is provided.")
-        process_target(
-            ra=args.ra,
-            dec=args.dec,
-            radius=args.radius,
-            output_dir=args.output,
-        )
 
 if __name__ == "__main__":
     main()

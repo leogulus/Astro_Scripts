@@ -127,3 +127,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Generated astronomy outputs
+clstr*/
+desi_output/
+object_catalog.csv
+download_complete.txt
+spectrum_*.npz
+spectrum_*.png
+img_ix*_annoted_*.jpg
+img_ix*_annoted_*.fits
+img_ix*_annoted_*_raw.fits
+ls_dr10_*.csv

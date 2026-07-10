@@ -64,7 +64,7 @@ python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits --keep-raw-f
 * JPEG mode writes an annotated image named like `img_ix00001_annoted_test.jpg`
 * FITS mode writes a reordered FITS cube named like `img_ix00001_annoted_test.fits`
 
-The FITS output is already reordered for easier use in SAOImage DS9, so no second fix-up script is needed.
+The original FITS cube downloaded from the DECaLS server has the band order wrong for SAOImage DS9 RGB display. This script automatically reorders the downloaded cube before saving the final FITS output, so no second fix-up script is needed.
 
 ### DS9 Note
 
