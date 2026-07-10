@@ -8,6 +8,7 @@ A collection of Python scripts and notebooks for retrieving astronomical imaging
 * [1. DECaLS Image Downloader (`decal_image_download.py`)](#1-decals-image-downloader-decal_image_downloadpy)
 * [2. SDSS Catalog Downloader (`download_SDSS_catalog_withSciServer.ipynb`)](#2-sdss-catalog-downloader-download_sdss_catalog_withsciserveripynb)
 * [3. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)](#3-ls-dr10-photometry-downloader-ls_dr10_catalog_downloadpy)
+* [4. DESI Spectra Downloader (`desi_download_spectra.py`)](#4-desi-spectra-downloader-desi_download_spectrapy)
 
 ---
 
@@ -173,3 +174,74 @@ mag = 22.5 - 2.5 * log10(dered_flux)
 # 4. Magnitude error
 mag_err = (2.5 / ln(10)) / (flux * sqrt(flux_ivar))
 ```
+
+---
+
+## 4. DESI Spectra Downloader (`desi_download_spectra.py`)
+
+Queries the SPARCL catalog for DESI spectra around one sky position or a batch of positions, downloads the spectra, and saves both data products and diagnostic plots.
+
+### Requirements
+
+* `numpy`
+* `matplotlib`
+* `astropy`
+* `sparcl`
+* `dl`
+
+### Single-Target Usage
+
+```bash
+python desi_download_spectra.py --ra <ra> --dec <dec> --radius <radius> --output <output_dir>
+```
+
+Example:
+
+```bash
+python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --output clstr01
+```
+
+### Batch Usage With CSV
+
+Use `--csv` to run the same workflow for many targets at once.
+
+```bash
+python desi_download_spectra.py --csv targets.csv
+```
+
+The included example file [targets.csv](/Users/taweewat/Documents/Softwares/Astro_Scripts/targets.csv) uses this format:
+
+```csv
+name,ra,dec,radius,output
+cluster_a,140.1704,2.7832,0.02,clstr01
+cluster_b,150.1163,2.2058,0.03,clstr02
+```
+
+Required CSV columns:
+
+* `name`
+* `ra`
+* `dec`
+* `radius`
+
+Optional CSV column:
+
+* `output`: Output directory name for that row. If omitted, the script uses `name`.
+
+### Useful Options
+
+* `--overwrite`: Re-run a target even if `download_complete.txt` already exists.
+* `--no-plots`: Save only the catalog and `.npz` spectra, without PNG plots.
+* `--show-model`: Overlay the SPARCL model spectrum when available.
+* `--no-smooth`: Disable the smoothed spectrum overlay.
+* `--smooth-sigma`: Change the Gaussian smoothing width for plots.
+* `--no-absorption-lines`: Do not draw common absorption lines on the plot.
+
+### Output
+
+For each target, the script writes:
+
+* `object_catalog.csv`: Catalog rows returned by the cone search
+* `spectrum_<sparcl_id>.npz`: Saved spectrum arrays and metadata
+* `spectrum_<sparcl_id>.png`: Plot of the spectrum, unless `--no-plots` is used
+* `download_complete.txt`: Sentinel file marking the target as complete
