@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -18,6 +19,154 @@ DEFAULT_OUTPUT_DIR = "desi_output"
 DEFAULT_SMOOTH_SIGMA = 5.0
 SENTINEL_FILENAME = "download_complete.txt"
 CATALOG_FILENAME = "object_catalog.csv"
+SPARCL_SELECT_COLUMNS = [
+    "sparcl_id",
+    "specid",
+    "targetid",
+    "ra",
+    "dec",
+    "redshift",
+    "redshift_err",
+    "spectype",
+    "data_release",
+]
+DESI_JOIN_SELECT_COLUMNS = [
+    "z.targetid",
+    "z.z AS zpix_z",
+    "z.zerr AS zpix_zerr",
+    "z.zwarn",
+    "z.chi2",
+    "z.deltachi2",
+    "z.subtype",
+    "z.survey",
+    "z.program",
+    "z.healpix",
+    "z.coadd_exptime",
+    "z.coadd_numexp",
+    "z.coadd_numnight",
+    "z.coadd_numtile",
+    "z.main_primary",
+    "z.zcat_primary",
+    "z.mean_fiber_ra",
+    "z.mean_fiber_dec",
+    "p.ls_id",
+    "p.flux_g",
+    "p.flux_r",
+    "p.flux_z",
+    "p.flux_w1",
+    "p.flux_w2",
+    "p.flux_ivar_g",
+    "p.flux_ivar_r",
+    "p.flux_ivar_z",
+    "p.flux_ivar_w1",
+    "p.flux_ivar_w2",
+    "p.fiberflux_g",
+    "p.fiberflux_r",
+    "p.fiberflux_z",
+    "p.fibertotflux_g",
+    "p.fibertotflux_r",
+    "p.fibertotflux_z",
+    "p.ebv",
+    "p.maskbits",
+    "p.morphtype",
+    "p.shape_r",
+    "p.parallax",
+    "p.pmra",
+    "p.pmdec",
+    "p.gaia_phot_g_mean_mag",
+    "p.gaia_phot_bp_mean_mag",
+    "p.gaia_phot_rp_mean_mag",
+    "t.priority_init",
+    "t.numobs_init",
+    "t.obsconditions",
+    "t.photsys",
+    "t.desi_target AS target_desi_target",
+    "t.bgs_target AS target_bgs_target",
+    "t.mws_target AS target_mws_target",
+    "t.scnd_target AS target_scnd_target",
+]
+JOIN_CHUNK_SIZE = 500
+DEFAULT_RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_DELAY = 3.0
+CATALOG_COLUMN_PRESETS = {
+    "default": [
+        "sparcl_id",
+        "specid",
+        "targetid",
+        "ra",
+        "dec",
+        "redshift",
+        "redshift_err",
+        "zpix_z",
+        "zpix_zerr",
+        "zwarn",
+        "spectype",
+        "subtype",
+        "chi2",
+        "deltachi2",
+        "survey",
+        "program",
+        "healpix",
+        "coadd_numexp",
+        "coadd_numnight",
+        "coadd_numtile",
+        "ls_id",
+        "flux_g",
+        "flux_r",
+        "flux_z",
+        "flux_w1",
+        "flux_w2",
+        "maskbits",
+        "morphtype",
+        "shape_r",
+        "data_release",
+    ],
+    "duplicates": [
+        "sparcl_id",
+        "specid",
+        "targetid",
+        "ls_id",
+        "ra",
+        "dec",
+        "mean_fiber_ra",
+        "mean_fiber_dec",
+        "redshift",
+        "redshift_err",
+        "zpix_z",
+        "zpix_zerr",
+        "zwarn",
+        "chi2",
+        "deltachi2",
+        "spectype",
+        "subtype",
+        "survey",
+        "program",
+        "healpix",
+        "coadd_exptime",
+        "coadd_numexp",
+        "coadd_numnight",
+        "coadd_numtile",
+        "main_primary",
+        "zcat_primary",
+        "flux_g",
+        "flux_r",
+        "flux_z",
+        "flux_w1",
+        "flux_w2",
+        "maskbits",
+        "morphtype",
+        "shape_r",
+        "parallax",
+        "pmra",
+        "pmdec",
+        "target_desi_target",
+        "target_bgs_target",
+        "target_mws_target",
+        "target_scnd_target",
+        "data_release",
+    ],
+    "full": [],
+}
 
 
 def positive_float(value: str) -> float:
@@ -82,17 +231,6 @@ def cone_query_sql(
     limit: int,
 ) -> str:
     """Build the SPARCL cone-search SQL query."""
-    cols = [
-        "sparcl_id",
-        "specid",
-        "ra",
-        "dec",
-        "redshift",
-        "redshift_err",
-        "spectype",
-        "data_release",
-    ]
-
     cos_dec = max(np.cos(np.radians(dec_deg)), 1e-6)
     ra_width = radius_deg / cos_dec
     ra_min = ra_deg - ra_width
@@ -101,7 +239,7 @@ def cone_query_sql(
     dec_max = dec_deg + radius_deg
 
     return f"""
-    SELECT {", ".join(cols)}
+    SELECT {", ".join(SPARCL_SELECT_COLUMNS)}
     FROM {table}
     WHERE
         ra BETWEEN {ra_min:.10f} AND {ra_max:.10f}
@@ -139,6 +277,120 @@ def cone_query(
     return qc.query(sql=sql, fmt="pandas")
 
 
+def run_with_retries(operation_name: str, func, *, attempts: int, delay_seconds: float):
+    """Retry a network-backed operation a few times before failing."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return func()
+        except Exception as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            print(
+                f"  {operation_name} failed on attempt {attempt}/{attempts}: {exc}\n"
+                f"  Retrying in {delay_seconds:.0f} seconds..."
+            )
+            time.sleep(delay_seconds)
+    raise last_error
+
+
+def data_release_schema(data_release: str) -> str:
+    """Map a DESI data-release label to the corresponding Data Lab schema."""
+    return data_release.lower().replace("-", "_")
+
+
+def chunked(values: list[int], size: int) -> list[list[int]]:
+    """Split a list into fixed-size chunks."""
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def desi_join_sql(schema: str, targetid_chunk: list[int]) -> str:
+    """Build a DESI metadata join for a chunk of target IDs."""
+    targetids = ", ".join(str(targetid) for targetid in targetid_chunk)
+    return f"""
+    SELECT
+        {", ".join(DESI_JOIN_SELECT_COLUMNS)}
+    FROM {schema}.zpix AS z
+    LEFT JOIN {schema}.photometry AS p
+        ON z.targetid = p.targetid
+    LEFT JOIN {schema}.target AS t
+        ON z.targetid = t.targetid
+    WHERE z.targetid IN ({targetids})
+    """
+
+
+def fetch_joined_desi_catalog(targetids, data_release: str):
+    """Fetch additional DESI metadata from Data Lab tables."""
+    from dl import queryClient as qc
+    import pandas as pd
+
+    valid_targetids = sorted(
+        {
+            int(targetid)
+            for targetid in targetids
+            if targetid is not None and str(targetid).strip().lower() not in {"", "nan", "none"}
+        }
+    )
+    if not valid_targetids:
+        return pd.DataFrame()
+
+    schema = data_release_schema(data_release)
+    frames = []
+    for targetid_chunk in chunked(valid_targetids, JOIN_CHUNK_SIZE):
+        sql = desi_join_sql(schema, targetid_chunk)
+        frames.append(
+            run_with_retries(
+                "DESI metadata join query",
+                lambda sql=sql: qc.query(sql=sql, fmt="pandas"),
+                attempts=DEFAULT_RETRY_ATTEMPTS,
+                delay_seconds=DEFAULT_RETRY_DELAY,
+            )
+        )
+
+    joined = pd.concat(frames, ignore_index=True)
+    return joined.drop_duplicates(subset=["targetid"], keep="first")
+
+
+def build_final_catalog(found, data_release: str):
+    """Merge the SPARCL cone-search result with richer DESI metadata."""
+    joined = fetch_joined_desi_catalog(found["targetid"].tolist(), data_release=data_release)
+    if len(joined) == 0:
+        return found
+    return found.merge(joined, on="targetid", how="left")
+
+
+def deduplicate_by_targetid(found):
+    """Keep one row per targetid, preferring the best-fit DESI solution."""
+    if "targetid" not in found.columns:
+        return found
+
+    deduped = found.copy()
+    if "chi2" in deduped.columns:
+        deduped["chi2"] = deduped["chi2"].fillna(np.inf)
+    if "redshift_err" in deduped.columns:
+        deduped["redshift_err"] = deduped["redshift_err"].fillna(np.inf)
+    if "deltachi2" in deduped.columns:
+        deduped["deltachi2"] = deduped["deltachi2"].fillna(-np.inf)
+
+    deduped = deduped.sort_values(
+        by=["targetid", "redshift_err", "chi2", "deltachi2"],
+        ascending=[True, True, True, False],
+        na_position="last",
+    )
+    return deduped.drop_duplicates(subset=["targetid"], keep="first").reset_index(drop=True)
+
+
+def select_catalog_columns(catalog, profile: str):
+    """Apply a named output-column preset to the merged catalog."""
+    if profile == "full":
+        return catalog
+
+    requested = CATALOG_COLUMN_PRESETS[profile]
+    available = [column for column in requested if column in catalog.columns]
+    return catalog.loc[:, available]
+
+
 def create_sparcl_client():
     """Create the SPARCL API client lazily."""
     from sparcl.client import SparclClient
@@ -158,10 +410,27 @@ def safe_float(value, default: float = 0.0) -> float:
 def build_catalog_lookup(found) -> dict[str, dict[str, object]]:
     """Build a lookup of catalog rows keyed by SPARCL ID."""
     lookup: dict[str, dict[str, object]] = {}
-    for row in found.to_dict(orient="records"):
+    if hasattr(found, "to_dict"):
+        rows = found.to_dict(orient="records")
+    else:
+        rows = found
+
+    for row in rows:
         sparcl_id = str(row["sparcl_id"])
         lookup[sparcl_id] = row
     return lookup
+
+
+def read_catalog_csv(catalog_path: Path) -> list[dict[str, object]]:
+    """Read a saved object_catalog.csv into a list of row dictionaries."""
+    if not catalog_path.exists():
+        raise FileNotFoundError(f"Catalog file not found: {catalog_path}")
+
+    with catalog_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Catalog file is empty or missing a header row: {catalog_path}")
+        return list(reader)
 
 
 def save_spectrum(results, index: int, output_dir: Path) -> Path:
@@ -193,31 +462,34 @@ def save_spectrum(results, index: int, output_dir: Path) -> Path:
     return output_path
 
 
-def plot_spectrum(
-    results,
-    index: int,
+def plot_spectrum_data(
+    *,
+    sparcl_id,
+    wavelength,
+    flux,
+    model,
+    wave_unit,
+    flux_unit,
+    metadata: dict[str, object],
     output_dir: Path,
     catalog_lookup: dict[str, dict[str, object]],
-    *,
     show_model: bool,
     show_smooth: bool,
     smooth_sigma: float,
     include_absorption: bool,
 ) -> Path:
-    """Plot one downloaded spectrum and save it to disk."""
-    sparcl_id = results.meta["sparcl_id"][index]
+    """Plot one spectrum and save it to disk."""
     output_path = output_dir / f"spectrum_{sparcl_id}.png"
 
-    wavelength = np.asarray(results.spectral_axis)
-    flux = np.asarray(results.flux[index]) if np.ndim(results.flux) != 1 else np.asarray(results.flux)
-    wave_unit = getattr(results.spectral_axis, "unit", "")
-    flux_unit = getattr(results.flux, "unit", "")
-
-    metadata = {key: metadata_value(results.meta, key, index) for key in results.meta}
     catalog_row = catalog_lookup.get(str(sparcl_id), {})
     redshift = safe_float(metadata.get("redshift"), default=0.0)
     ra = safe_float(metadata.get("ra"), default=safe_float(catalog_row.get("ra"), default=float("nan")))
     dec = safe_float(metadata.get("dec"), default=safe_float(catalog_row.get("dec"), default=float("nan")))
+    spectype = metadata.get("spectype") or catalog_row.get("spectype") or "unknown"
+    subtype = catalog_row.get("subtype") or "unknown"
+    survey = catalog_row.get("survey") or "unknown"
+    program = catalog_row.get("program") or "unknown"
+    morphtype = catalog_row.get("morphtype") or "unknown"
 
     plt.figure(figsize=(10, 5))
     plt.plot(wavelength, flux, alpha=0.3, lw=0.8, label="Observed")
@@ -227,8 +499,8 @@ def plot_spectrum(
         smoothed = convolve(flux, kernel, boundary="extend")
         plt.plot(wavelength, smoothed, lw=1.2, label="Smoothed")
 
-    if show_model and "model" in results.meta:
-        model = np.asarray(results.meta["model"][index])
+    if show_model and model is not None:
+        model = np.asarray(model)
         if model.ndim > 1:
             model = model[0]
         plt.plot(wavelength, model, lw=1.5, label="Model")
@@ -256,7 +528,8 @@ def plot_spectrum(
     title_dec = f"{dec:.5f}" if math.isfinite(dec) else "unknown"
     plt.title(
         f"SPARCL ID = {metadata.get('sparcl_id', sparcl_id)}\n"
-        f"z = {redshift:.4f}, RA = {title_ra}, Dec = {title_dec}"
+        f"z = {redshift:.4f}, RA = {title_ra}, Dec = {title_dec}\n"
+        f"{spectype} | {subtype} | {survey} | {program} | {morphtype}"
     )
 
     plt.legend(frameon=False)
@@ -264,6 +537,95 @@ def plot_spectrum(
     plt.savefig(output_path, dpi=200)
     plt.close()
     return output_path
+
+
+def plot_spectrum(
+    results,
+    index: int,
+    output_dir: Path,
+    catalog_lookup: dict[str, dict[str, object]],
+    *,
+    show_model: bool,
+    show_smooth: bool,
+    smooth_sigma: float,
+    include_absorption: bool,
+) -> Path:
+    """Plot one downloaded spectrum and save it to disk."""
+    sparcl_id = results.meta["sparcl_id"][index]
+    metadata = {key: metadata_value(results.meta, key, index) for key in results.meta}
+    model = None
+    if "model" in results.meta:
+        model = results.meta["model"][index]
+
+    return plot_spectrum_data(
+        sparcl_id=sparcl_id,
+        wavelength=np.asarray(results.spectral_axis),
+        flux=np.asarray(results.flux[index]) if np.ndim(results.flux) != 1 else np.asarray(results.flux),
+        model=model,
+        wave_unit=getattr(results.spectral_axis, "unit", ""),
+        flux_unit=getattr(results.flux, "unit", ""),
+        metadata=metadata,
+        output_dir=output_dir,
+        catalog_lookup=catalog_lookup,
+        show_model=show_model,
+        show_smooth=show_smooth,
+        smooth_sigma=smooth_sigma,
+        include_absorption=include_absorption,
+    )
+
+
+def replot_directory(
+    output_dir: Path,
+    *,
+    show_model: bool,
+    show_smooth: bool,
+    smooth_sigma: float,
+    include_absorption: bool,
+) -> None:
+    """Regenerate PNG plots from saved NPZ spectra and object_catalog.csv."""
+    catalog_path = output_dir / CATALOG_FILENAME
+    catalog_rows = read_catalog_csv(catalog_path)
+    catalog_lookup = build_catalog_lookup(catalog_rows)
+    spectrum_files = sorted(output_dir.glob("spectrum_*.npz"))
+
+    if not spectrum_files:
+        raise FileNotFoundError(f"No spectrum_*.npz files found in {output_dir}")
+
+    print(f"\n=== Replotting {output_dir} ===")
+    for index, spectrum_path in enumerate(spectrum_files, start=1):
+        with np.load(spectrum_path, allow_pickle=True) as data:
+            sparcl_id = str(data["sparcl_id"])
+            metadata = {
+                "sparcl_id": sparcl_id,
+                "redshift": data["redshift"].item() if np.ndim(data["redshift"]) == 0 else data["redshift"],
+                "specid": data["specid"].item() if np.ndim(data["specid"]) == 0 else data["specid"],
+                "spectype": data["spectype"].item() if np.ndim(data["spectype"]) == 0 else data["spectype"],
+                "ra": data["ra"].item() if np.ndim(data["ra"]) == 0 else data["ra"],
+                "dec": data["dec"].item() if np.ndim(data["dec"]) == 0 else data["dec"],
+            }
+            model = None
+            if "model" in data.files:
+                candidate = data["model"]
+                if candidate.dtype != object or candidate.item() is not None:
+                    model = candidate
+
+            plot_spectrum_data(
+                sparcl_id=sparcl_id,
+                wavelength=np.asarray(data["wavelength"]),
+                flux=np.asarray(data["flux"]),
+                model=model,
+                wave_unit="Angstrom",
+                flux_unit="1e-17 erg / (Angstrom s cm2)",
+                metadata=metadata,
+                output_dir=output_dir,
+                catalog_lookup=catalog_lookup,
+                show_model=show_model,
+                show_smooth=show_smooth,
+                smooth_sigma=smooth_sigma,
+                include_absorption=include_absorption,
+            )
+        if index == 1 or index == len(spectrum_files) or index % 25 == 0:
+            print(f"  Replotted {index}/{len(spectrum_files)} spectra")
 
 
 def read_targets_csv(csv_path: Path) -> list[dict[str, str]]:
@@ -324,6 +686,7 @@ def process_target(
     table: str,
     data_release: str,
     limit: int,
+    catalog_columns: str,
     overwrite: bool,
     save_plots: bool,
     show_model: bool,
@@ -344,13 +707,18 @@ def process_target(
     print(f"RA={ra_deg:.6f}, Dec={dec_deg:.6f}, Radius={radius_deg:.4f}")
 
     try:
-        found = cone_query(
-            ra_deg,
-            dec_deg,
-            radius_deg,
-            table=table,
-            data_release=data_release,
-            limit=limit,
+        found = run_with_retries(
+            "Cone search",
+            lambda: cone_query(
+                ra_deg,
+                dec_deg,
+                radius_deg,
+                table=table,
+                data_release=data_release,
+                limit=limit,
+            ),
+            attempts=DEFAULT_RETRY_ATTEMPTS,
+            delay_seconds=DEFAULT_RETRY_DELAY,
         )
     except Exception as exc:
         raise SystemExit(f"Cone search failed for {target_label}: {exc}") from exc
@@ -359,16 +727,34 @@ def process_target(
         print("  No objects found.")
         return
 
-    catalog_path = output_dir / CATALOG_FILENAME
-    found.to_csv(catalog_path, index=False)
-
-    sparcl_ids = list(found["sparcl_id"])
-    catalog_lookup = build_catalog_lookup(found)
     try:
-        results = client.retrieve(
-            uuid_list=sparcl_ids,
-            include=include_fields(show_model),
-            fmt="specutils",
+        final_catalog = build_final_catalog(found, data_release=data_release)
+    except Exception as exc:
+        raise SystemExit(f"DESI catalog join failed for {target_label}: {exc}") from exc
+
+    original_count = len(final_catalog)
+    final_catalog = deduplicate_by_targetid(final_catalog)
+    removed_count = original_count - len(final_catalog)
+    if removed_count > 0:
+        print(f"  Deduplicated {removed_count} rows with repeated targetid values using fit quality.")
+
+    output_catalog = select_catalog_columns(final_catalog, catalog_columns)
+
+    catalog_path = output_dir / CATALOG_FILENAME
+    output_catalog.to_csv(catalog_path, index=False)
+
+    sparcl_ids = list(final_catalog["sparcl_id"])
+    catalog_lookup = build_catalog_lookup(final_catalog)
+    try:
+        results = run_with_retries(
+            "Spectrum retrieval",
+            lambda: client.retrieve(
+                uuid_list=sparcl_ids,
+                include=include_fields(show_model),
+                fmt="specutils",
+            ),
+            attempts=DEFAULT_RETRY_ATTEMPTS,
+            delay_seconds=DEFAULT_RETRY_DELAY,
         )
     except Exception as exc:
         raise SystemExit(f"Spectrum retrieval failed for {target_label}: {exc}") from exc
@@ -426,6 +812,15 @@ python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --no-pl
         ),
     )
     parser.add_argument(
+        "--replot-dirs",
+        nargs="+",
+        type=Path,
+        help=(
+            "Regenerate spectrum PNG files from existing output directories that already contain "
+            "object_catalog.csv and spectrum_*.npz files, without doing any new search or download."
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=DEFAULT_LIMIT,
@@ -440,6 +835,16 @@ python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --no-pl
         "--table",
         default="sparcl.main",
         help="SPARCL table name to query (default: sparcl.main).",
+    )
+    parser.add_argument(
+        "--catalog-columns",
+        choices=["default", "duplicates", "full"],
+        default="default",
+        help=(
+            "Choose which columns are written to object_catalog.csv: "
+            "'default' for normal use, 'duplicates' for diagnosing repeated rows, "
+            "or 'full' for every fetched join column."
+        ),
     )
     parser.add_argument(
         "--overwrite",
@@ -485,6 +890,17 @@ def main() -> None:
     show_smooth = not args.no_smooth
     include_absorption = not args.no_absorption_lines
 
+    if args.replot_dirs:
+        for output_dir in args.replot_dirs:
+            replot_directory(
+                output_dir.expanduser().resolve(),
+                show_model=args.show_model,
+                show_smooth=show_smooth,
+                smooth_sigma=args.smooth_sigma,
+                include_absorption=include_absorption,
+            )
+        return
+
     if args.csv:
         csv_path = args.csv.expanduser().resolve()
         try:
@@ -508,6 +924,7 @@ def main() -> None:
                 table=args.table,
                 data_release=args.data_release,
                 limit=args.limit,
+                catalog_columns=args.catalog_columns,
                 overwrite=args.overwrite,
                 save_plots=save_plots,
                 show_model=args.show_model,
@@ -533,6 +950,7 @@ def main() -> None:
         table=args.table,
         data_release=args.data_release,
         limit=args.limit,
+        catalog_columns=args.catalog_columns,
         overwrite=args.overwrite,
         save_plots=save_plots,
         show_model=args.show_model,

@@ -181,6 +181,13 @@ mag_err = (2.5 / ln(10)) / (flux * sqrt(flux_ivar))
 
 Queries the SPARCL catalog for DESI spectra around one sky position or a batch of positions, downloads the spectra, and saves both data products and diagnostic plots.
 
+The script now uses a two-step metadata workflow:
+
+1. Cone search in `sparcl.main` to find nearby spectra and collect `sparcl_id` / `targetid`
+2. Join richer DESI metadata from `desi_dr1.zpix`, `desi_dr1.photometry`, and `desi_dr1.target`
+
+The spectra themselves are still downloaded from SPARCL using `sparcl_id`.
+
 ### Requirements
 
 The DESI script is heavier than the other scripts in this repository because it depends on two astronomy-specific client packages:
@@ -269,12 +276,41 @@ Optional CSV column:
 * `--no-smooth`: Disable the smoothed spectrum overlay.
 * `--smooth-sigma`: Change the Gaussian smoothing width for plots.
 * `--no-absorption-lines`: Do not draw common absorption lines on the plot.
+* `--catalog-columns default`: Write a compact everyday catalog.
+* `--catalog-columns duplicates`: Write a catalog aimed at investigating repeated rows and target-level duplicates.
+* `--catalog-columns full`: Write every fetched join column from the DESI tables.
+
+### Duplicate Handling
+
+If multiple rows share the same `targetid`, the script keeps only one row before downloading spectra.
+
+The current preference order is:
+
+* smaller `redshift_err`
+* smaller `chi2`
+* larger `deltachi2`
+
+This helps reduce obvious repeated entries while keeping the better-fit DESI solution.
+
+### Replot Existing Directories
+
+If you already have output directories with `object_catalog.csv` and `spectrum_*.npz`, you can regenerate the PNG plots without doing the cone search, DESI joins, or SPARCL download again.
+
+```bash
+python desi_download_spectra.py --replot-dirs clstr01 clstr02
+```
+
+This mode also works with plot options such as:
+
+```bash
+python desi_download_spectra.py --replot-dirs clstr01 clstr02 --show-model --no-smooth
+```
 
 ### Output
 
 For each target, the script writes:
 
-* `object_catalog.csv`: Catalog rows returned by the cone search
+* `object_catalog.csv`: Final catalog after SPARCL cone search, DESI table joins, and optional column filtering
 * `spectrum_<sparcl_id>.npz`: Saved spectrum arrays and metadata
 * `spectrum_<sparcl_id>.png`: Plot of the spectrum, unless `--no-plots` is used
 * `download_complete.txt`: Sentinel file marking the target as complete
