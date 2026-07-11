@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import tempfile
 import urllib.error
@@ -20,6 +21,7 @@ from astropy.io import fits
 PIXEL_SCALE_ARCSEC = 0.262
 BASE_IMAGE_SIZE = 2048
 SURVEY_LAYER = "ls-dr9"
+OBJECT_CATALOG_FILENAME = "object_catalog.csv"
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
 
 
@@ -85,6 +87,80 @@ def make_ds9_friendly_fits(input_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+def read_object_catalog(catalog_dir: Path) -> list[dict[str, object]]:
+    """Read DESI object positions from object_catalog.csv."""
+    catalog_path = catalog_dir / OBJECT_CATALOG_FILENAME
+    if not catalog_path.exists():
+        raise FileNotFoundError(f"Catalog file not found: {catalog_path}")
+
+    with catalog_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Catalog file is empty: {catalog_path}")
+
+        required = {"sparcl_id", "ra", "dec"}
+        missing = required - set(reader.fieldnames)
+        if missing:
+            raise ValueError(
+                f"Catalog file {catalog_path} is missing required columns: {sorted(missing)}"
+            )
+
+        rows: list[dict[str, object]] = []
+        for row in reader:
+            rows.append(
+                {
+                    "sparcl_id": str(row["sparcl_id"]),
+                    "ra": float(row["ra"]),
+                    "dec": float(row["dec"]),
+                }
+            )
+    return rows
+
+
+def plot_catalog_markers(
+    *,
+    catalog_rows: list[dict[str, object]],
+    ra_center: float,
+    dec_center: float,
+    image_size: int,
+    label_chars: int,
+) -> None:
+    """Overlay object markers from a DESI catalog on the JPEG image."""
+    x_center = image_size / 2
+    y_center = image_size / 2
+    cos_dec = math.cos(math.radians(dec_center))
+
+    for row in catalog_rows:
+        delta_ra_arcsec = (float(row["ra"]) - ra_center) * cos_dec * 3600.0
+        delta_dec_arcsec = (float(row["dec"]) - dec_center) * 3600.0
+
+        # Assume the cutout is north-up and east-left.
+        x_pos = x_center - (delta_ra_arcsec / PIXEL_SCALE_ARCSEC)
+        y_pos = y_center - (delta_dec_arcsec / PIXEL_SCALE_ARCSEC)
+
+        if not (0 <= x_pos < image_size and 0 <= y_pos < image_size):
+            continue
+
+        label = str(row["sparcl_id"])[:label_chars]
+        plt.scatter(
+            x_pos,
+            y_pos,
+            s=100,
+            facecolors="none",
+            edgecolors="cyan",
+            linewidths=1.2,
+        )
+        plt.text(
+            x_pos + 10,
+            y_pos - 10,
+            label,
+            color="cyan",
+            fontsize=10,
+            weight="bold",
+            bbox={"facecolor": "black", "alpha": 0.35, "pad": 1.5, "edgecolor": "none"},
+        )
+
+
 def create_annotated_jpeg(
     *,
     temp_image_path: Path,
@@ -92,11 +168,27 @@ def create_annotated_jpeg(
     name: str,
     redshift: float,
     fraction_size: float,
+    ra_center: float,
+    dec_center: float,
+    catalog_dir: Path | None,
+    label_chars: int,
 ) -> Path:
     """Annotate a downloaded JPEG cutout and save it."""
     image = mpimg.imread(temp_image_path)
+    image_size = image.shape[0]
+
     figure = plt.figure(figsize=(10, 10))
     plt.imshow(image)
+
+    if catalog_dir is not None:
+        catalog_rows = read_object_catalog(catalog_dir)
+        plot_catalog_markers(
+            catalog_rows=catalog_rows,
+            ra_center=ra_center,
+            dec_center=dec_center,
+            image_size=image_size,
+            label_chars=label_chars,
+        )
 
     fraction_half = fraction_size / 2
     x_pos = 50 / fraction_half
@@ -136,6 +228,8 @@ def download_decal_image(
     *,
     fits_format: bool = False,
     keep_raw_fits: bool = False,
+    catalog_dir: Path | None = None,
+    label_chars: int = 3,
 ) -> Path:
     """Download a DECaLS cutout as a JPEG or a DS9-friendly FITS file."""
     size = int(BASE_IMAGE_SIZE / fraction_size)
@@ -172,8 +266,12 @@ def download_decal_image(
             name=name,
             redshift=redshift,
             fraction_size=fraction_size,
+            ra_center=ra,
+            dec_center=dec,
+            catalog_dir=catalog_dir,
+            label_chars=label_chars,
         )
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, FileNotFoundError) as exc:
         raise SystemExit(f"Failed to create JPEG cutout: {exc}") from exc
     finally:
         if temp_path.exists():
@@ -215,11 +313,28 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep the original downloaded FITS cube alongside the DS9-friendly version.",
     )
+    parser.add_argument(
+        "--catalog-dir",
+        type=Path,
+        help=(
+            "Directory containing object_catalog.csv from desi_download_spectra.py. "
+            "When provided, the JPEG output marks all catalog objects using their sky offsets from the image center."
+        ),
+    )
+    parser.add_argument(
+        "--label-chars",
+        type=int,
+        default=3,
+        help="Number of leading sparcl_id characters to show beside each marker (default: 3).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.label_chars <= 0:
+        raise SystemExit("--label-chars must be greater than 0")
+
     download_decal_image(
         args.index,
         args.ra,
@@ -229,6 +344,8 @@ def main() -> None:
         fraction_size=args.fraction_size,
         fits_format=args.fits,
         keep_raw_fits=args.keep_raw_fits,
+        catalog_dir=args.catalog_dir.expanduser().resolve() if args.catalog_dir else None,
+        label_chars=args.label_chars,
     )
 
 
