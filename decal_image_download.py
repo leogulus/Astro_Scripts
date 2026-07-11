@@ -62,6 +62,51 @@ def compute_physical_scale_kpc(redshift: float) -> float | None:
     return scale.to(u.kpc).value
 
 
+def draw_scale_bar(*, image_size: int, redshift: float, name: str) -> None:
+    """Draw a 1 arcmin scale bar and annotation block."""
+    bar_arcsec = 60.0
+    bar_length_px = bar_arcsec / PIXEL_SCALE_ARCSEC
+
+    margin_x = image_size * 0.08
+    margin_y = image_size * 0.10
+    x_start = margin_x
+    x_end = x_start + bar_length_px
+    y_bar = image_size - margin_y
+
+    plt.plot([x_start, x_end], [y_bar, y_bar], color="white", lw=2.2, solid_capstyle="butt")
+    plt.plot([x_start, x_start], [y_bar - 8, y_bar + 8], color="white", lw=2.0)
+    plt.plot([x_end, x_end], [y_bar - 8, y_bar + 8], color="white", lw=2.0)
+
+    physical_scale = compute_physical_scale_kpc(redshift)
+    if physical_scale is None:
+        scale_text = "1 arcmin"
+        redshift_text = f"{name} | z unknown"
+    else:
+        scale_text = f"1 arcmin = {physical_scale:.0f} kpc"
+        redshift_text = f"{name} | z = {redshift:.3f}"
+
+    plt.text(
+        x_start,
+        y_bar - 22,
+        scale_text,
+        color="white",
+        fontsize=12,
+        ha="left",
+        va="bottom",
+        bbox={"facecolor": "black", "alpha": 0.35, "pad": 2.0, "edgecolor": "none"},
+    )
+    plt.text(
+        x_start,
+        y_bar + 18,
+        redshift_text,
+        color="white",
+        fontsize=12,
+        ha="left",
+        va="top",
+        bbox={"facecolor": "black", "alpha": 0.35, "pad": 2.0, "edgecolor": "none"},
+    )
+
+
 def format_axes(fig: plt.Figure) -> None:
     """Remove axis decorations from all axes in the figure."""
     for axis in fig.axes:
@@ -190,26 +235,7 @@ def create_annotated_jpeg(
             label_chars=label_chars,
         )
 
-    fraction_half = fraction_size / 2
-    x_pos = 50 / fraction_half
-    y_pos = 140 / fraction_half
-
-    plt.annotate("1 arcmin", (x_pos + 40, y_pos - 10 / fraction_half), color="white", fontsize=13)
-
-    physical_scale = compute_physical_scale_kpc(redshift)
-    if physical_scale is None:
-        plt.annotate(name, (x_pos, y_pos - 50 / fraction_half), color="white", fontsize=13)
-        scale_label = "z unknown"
-    else:
-        scale_label = f"{physical_scale:.0f} kpc"
-
-    plt.annotate(scale_label, (x_pos + 40, y_pos + 17 / fraction_half), color="white", fontsize=13)
-    plt.annotate(
-        "",
-        xy=(x_pos, y_pos + 50),
-        xytext=(x_pos + 229, y_pos + 50),
-        arrowprops={"arrowstyle": "-", "color": "white"},
-    )
+    draw_scale_bar(image_size=image_size, redshift=redshift, name=name)
 
     format_axes(figure)
     plt.tight_layout()
@@ -296,12 +322,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "redshift",
         type=float,
-        help="Target redshift. Use 0 if it is unknown.",
+        nargs="?",
+        default=0.2,
+        help="Target redshift used for the physical scale label (default: 0.2). Use 0 if it is unknown.",
     )
     parser.add_argument(
         "fraction_size",
         type=positive_float,
-        help="Image scale factor: 1=2048 px, 2=1024 px, 4=512 px.",
+        nargs="?",
+        default=1,
+        help="Image scale factor: 1=2048 px, 2=1024 px, 4=512 px (default: 1).",
     )
     parser.add_argument(
         "--fits",

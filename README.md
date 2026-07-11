@@ -27,14 +27,19 @@ Downloads optical images directly from the [DECaLS servers](https://www.legacysu
 python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_size>
 ```
 
+Both `<redshift>` and `<fraction_size>` are optional:
+
+* default redshift: `0.2`
+* default fraction size: `1`
+
 ### Arguments
 
 * `<index>`: Identifier index or row number.
 * `<ra>`: Right Ascension (in degrees).
 * `<dec>`: Declination (in degrees).
 * `<name>`: Output file name/prefix.
-* `<redshift>`: Target redshift. Set to `0` if unknown.
-* `<fraction_size>`: Resolution scaling factor.
+* `<redshift>`: Target redshift used for the physical scale label *(default: `0.2`)*. Set to `0` if unknown.
+* `<fraction_size>`: Resolution scaling factor *(default: `1`)*.
 * `--fits`: Download a FITS cube instead of an annotated JPEG.
 * `--keep-raw-fits`: Keep the original downloaded FITS file alongside the reordered output.
 * `--catalog-dir`: Directory containing `object_catalog.csv` from `desi_download_spectra.py`. When provided, the JPEG output marks those catalog objects on the image.
@@ -50,6 +55,11 @@ python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_si
 * **Download JPEG:**
 ```bash
 python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4
+```
+
+* **Download JPEG using the default redshift (`0.2`) and default image size:**
+```bash
+python decal_image_download.py 1 57.8554 -15.4054 test
 ```
 
 * **Download FITS file:**
@@ -73,6 +83,8 @@ python decal_image_download.py 1 140.1704 2.7832 clstr01 0 4 --catalog-dir clstr
 * FITS mode writes a reordered FITS cube named like `img_ix00001_annoted_test.fits`
 
 The original FITS cube downloaded from the DECaLS server has the band order wrong for SAOImage DS9 RGB display. This script automatically reorders the downloaded cube before saving the final FITS output, so no second fix-up script is needed.
+
+The JPEG annotation includes a real 1 arcmin scale bar computed from the DECaLS pixel scale (`0.262` arcsec/px), plus a physical-size label in kpc at the chosen redshift.
 
 ### DESI Marker Overlay
 
