@@ -37,6 +37,8 @@ python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_si
 * `<fraction_size>`: Resolution scaling factor.
 * `--fits`: Download a FITS cube instead of an annotated JPEG.
 * `--keep-raw-fits`: Keep the original downloaded FITS file alongside the reordered output.
+* `--catalog-dir`: Directory containing `object_catalog.csv` from `desi_download_spectra.py`. When provided, the JPEG output marks those catalog objects on the image.
+* `--label-chars`: Number of leading `sparcl_id` characters to display beside each marker *(default: `3`)*.
 
 `fraction_size` examples:
 `1` = 2048 px
@@ -60,12 +62,28 @@ python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits
 python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits --keep-raw-fits
 ```
 
+* **Download a JPEG and overlay DESI catalog objects from an existing output directory:**
+```bash
+python decal_image_download.py 1 140.1704 2.7832 clstr01 0 4 --catalog-dir clstr01
+```
+
 ### Output
 
 * JPEG mode writes an annotated image named like `img_ix00001_annoted_test.jpg`
 * FITS mode writes a reordered FITS cube named like `img_ix00001_annoted_test.fits`
 
 The original FITS cube downloaded from the DECaLS server has the band order wrong for SAOImage DS9 RGB display. This script automatically reorders the downloaded cube before saving the final FITS output, so no second fix-up script is needed.
+
+### DESI Marker Overlay
+
+When `--catalog-dir` is used, the script reads `object_catalog.csv` from that directory and overlays the catalog objects on the JPEG cutout.
+
+The marker positions are computed using:
+
+* the input `ra` and `dec` as the image center
+* the DECaLS JPEG pixel scale of `0.262` arcsec/px
+
+This mode does not use WCS; it uses sky-coordinate offsets from the image center and converts them directly into pixel offsets.
 
 ### DS9 Note
 
