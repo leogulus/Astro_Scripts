@@ -21,7 +21,7 @@ from astropy.io import fits
 PIXEL_SCALE_ARCSEC = 0.262
 BASE_IMAGE_SIZE = 2048
 SURVEY_LAYER = "ls-dr9"
-OBJECT_CATALOG_FILENAME = "object_catalog.csv"
+DEFAULT_BRIGHTEST_COUNT = 5
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
 
 
@@ -132,34 +132,77 @@ def make_ds9_friendly_fits(input_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-def read_object_catalog(catalog_dir: Path) -> list[dict[str, object]]:
-    """Read DESI object positions from object_catalog.csv."""
-    catalog_path = catalog_dir / OBJECT_CATALOG_FILENAME
-    if not catalog_path.exists():
-        raise FileNotFoundError(f"Catalog file not found: {catalog_path}")
+def read_object_catalog(csv_path: Path) -> list[dict[str, object]]:
+    """Read DESI object positions from an object_catalog.csv file."""
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Catalog file not found: {csv_path}")
 
-    with catalog_path.open(newline="", encoding="utf-8") as handle:
+    with csv_path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
-            raise ValueError(f"Catalog file is empty: {catalog_path}")
+            raise ValueError(f"Catalog file is empty: {csv_path}")
 
         required = {"sparcl_id", "ra", "dec"}
         missing = required - set(reader.fieldnames)
         if missing:
             raise ValueError(
-                f"Catalog file {catalog_path} is missing required columns: {sorted(missing)}"
+                f"Catalog file {csv_path} is missing required columns: {sorted(missing)}"
             )
 
         rows: list[dict[str, object]] = []
         for row in reader:
+            redshift_value = row.get("redshift")
+            redshift: float | None = None
+            if redshift_value not in (None, ""):
+                try:
+                    parsed_redshift = float(redshift_value)
+                except (TypeError, ValueError):
+                    parsed_redshift = math.nan
+                if math.isfinite(parsed_redshift):
+                    redshift = parsed_redshift
+
             rows.append(
                 {
                     "sparcl_id": str(row["sparcl_id"]),
                     "ra": float(row["ra"]),
                     "dec": float(row["dec"]),
+                    "redshift": redshift,
                 }
             )
     return rows
+
+
+def read_brightest_ls_objects(csv_path: Path, brightest_count: int) -> list[dict[str, object]]:
+    """Read an LS DR10 CSV, sort by mag_i, and keep the brightest rows."""
+    if not csv_path.exists():
+        raise FileNotFoundError(f"LS catalog file not found: {csv_path}")
+
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"LS catalog file is empty: {csv_path}")
+
+        required = {"ra", "dec", "mag_i"}
+        missing = required - set(reader.fieldnames)
+        if missing:
+            raise ValueError(
+                f"LS catalog file {csv_path} is missing required columns: {sorted(missing)}"
+            )
+
+        rows: list[dict[str, object]] = []
+        for row in reader:
+            try:
+                mag_i = float(row["mag_i"])
+                ra = float(row["ra"])
+                dec = float(row["dec"])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(mag_i):
+                continue
+            rows.append({"ra": ra, "dec": dec, "mag_i": mag_i})
+
+    rows.sort(key=lambda row: row["mag_i"])
+    return rows[:brightest_count]
 
 
 def plot_catalog_markers(
@@ -187,6 +230,9 @@ def plot_catalog_markers(
             continue
 
         label = str(row["sparcl_id"])[:label_chars]
+        redshift = row.get("redshift")
+        if isinstance(redshift, (int, float)) and math.isfinite(float(redshift)):
+            label = f"{label} z={float(redshift):.2f}"
         plt.scatter(
             x_pos,
             y_pos,
@@ -206,6 +252,46 @@ def plot_catalog_markers(
         )
 
 
+def plot_brightest_ls_markers(
+    *,
+    catalog_rows: list[dict[str, object]],
+    ra_center: float,
+    dec_center: float,
+    image_size: int,
+) -> None:
+    """Overlay the brightest LS DR10 objects and label them by mag_i."""
+    x_center = image_size / 2
+    y_center = image_size / 2
+    cos_dec = math.cos(math.radians(dec_center))
+
+    for row in catalog_rows:
+        delta_ra_arcsec = (float(row["ra"]) - ra_center) * cos_dec * 3600.0
+        delta_dec_arcsec = (float(row["dec"]) - dec_center) * 3600.0
+        x_pos = x_center - (delta_ra_arcsec / PIXEL_SCALE_ARCSEC)
+        y_pos = y_center - (delta_dec_arcsec / PIXEL_SCALE_ARCSEC)
+
+        if not (0 <= x_pos < image_size and 0 <= y_pos < image_size):
+            continue
+
+        plt.scatter(
+            x_pos,
+            y_pos,
+            s=110,
+            facecolors="none",
+            edgecolors="yellow",
+            linewidths=1.6,
+        )
+        plt.text(
+            x_pos + 10,
+            y_pos + 10,
+            f"{float(row['mag_i']):.1f}",
+            color="yellow",
+            fontsize=10,
+            weight="bold",
+            bbox={"facecolor": "black", "alpha": 0.4, "pad": 1.5, "edgecolor": "none"},
+        )
+
+
 def create_annotated_jpeg(
     *,
     temp_image_path: Path,
@@ -215,7 +301,9 @@ def create_annotated_jpeg(
     fraction_size: float,
     ra_center: float,
     dec_center: float,
-    catalog_dir: Path | None,
+    catalog_csv: Path | None,
+    brightest_csv: Path | None,
+    brightest_count: int,
     label_chars: int,
 ) -> Path:
     """Annotate a downloaded JPEG cutout and save it."""
@@ -225,14 +313,23 @@ def create_annotated_jpeg(
     figure = plt.figure(figsize=(10, 10))
     plt.imshow(image)
 
-    if catalog_dir is not None:
-        catalog_rows = read_object_catalog(catalog_dir)
+    if catalog_csv is not None:
+        catalog_rows = read_object_catalog(catalog_csv)
         plot_catalog_markers(
             catalog_rows=catalog_rows,
             ra_center=ra_center,
             dec_center=dec_center,
             image_size=image_size,
             label_chars=label_chars,
+        )
+
+    if brightest_csv is not None:
+        brightest_rows = read_brightest_ls_objects(brightest_csv, brightest_count)
+        plot_brightest_ls_markers(
+            catalog_rows=brightest_rows,
+            ra_center=ra_center,
+            dec_center=dec_center,
+            image_size=image_size,
         )
 
     draw_scale_bar(image_size=image_size, redshift=redshift, name=name)
@@ -242,6 +339,27 @@ def create_annotated_jpeg(
     plt.savefig(output_path, dpi=120)
     plt.close()
     return output_path
+
+
+def build_jpeg_output_path(
+    *,
+    index: int,
+    name: str,
+    catalog_csv: Path | None,
+    brightest_csv: Path | None,
+) -> Path:
+    """Build a JPEG output path that keeps overlay variants separate."""
+    suffix_parts: list[str] = []
+    if catalog_csv is not None:
+        suffix_parts.append("desi")
+    if brightest_csv is not None:
+        suffix_parts.append("lsbright")
+
+    suffix = ""
+    if suffix_parts:
+        suffix = "_" + "_".join(suffix_parts)
+
+    return Path(f"img_ix{index:05d}_annoted_{name}{suffix}.jpg")
 
 
 def download_decal_image(
@@ -254,7 +372,9 @@ def download_decal_image(
     *,
     fits_format: bool = False,
     keep_raw_fits: bool = False,
-    catalog_dir: Path | None = None,
+    catalog_csv: Path | None = None,
+    brightest_csv: Path | None = None,
+    brightest_count: int = DEFAULT_BRIGHTEST_COUNT,
     label_chars: int = 3,
 ) -> Path:
     """Download a DECaLS cutout as a JPEG or a DS9-friendly FITS file."""
@@ -279,7 +399,12 @@ def download_decal_image(
             print(f"Kept original downloaded FITS as {raw_path}")
         return output_path
 
-    output_path = Path(f"img_ix{index:05d}_annoted_{name}.jpg")
+    output_path = build_jpeg_output_path(
+        index=index,
+        name=name,
+        catalog_csv=catalog_csv,
+        brightest_csv=brightest_csv,
+    )
     temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
     temp_path = Path(temp_file.name)
     temp_file.close()
@@ -294,7 +419,9 @@ def download_decal_image(
             fraction_size=fraction_size,
             ra_center=ra,
             dec_center=dec,
-            catalog_dir=catalog_dir,
+            catalog_csv=catalog_csv,
+            brightest_csv=brightest_csv,
+            brightest_count=brightest_count,
             label_chars=label_chars,
         )
     except (urllib.error.URLError, OSError, ValueError, FileNotFoundError) as exc:
@@ -344,12 +471,26 @@ def parse_args() -> argparse.Namespace:
         help="Keep the original downloaded FITS cube alongside the DS9-friendly version.",
     )
     parser.add_argument(
-        "--catalog-dir",
+        "--catalog-csv",
         type=Path,
         help=(
-            "Directory containing object_catalog.csv from desi_download_spectra.py. "
+            "Path to object_catalog.csv from desi_download_spectra.py. "
             "When provided, the JPEG output marks all catalog objects using their sky offsets from the image center."
         ),
+    )
+    parser.add_argument(
+        "--brightest-csv",
+        type=Path,
+        help=(
+            "CSV file produced by ls_dr10_catalog_download.py. "
+            "When provided, the JPEG output marks the brightest sources by mag_i."
+        ),
+    )
+    parser.add_argument(
+        "--brightest-count",
+        type=int,
+        default=DEFAULT_BRIGHTEST_COUNT,
+        help=f"Number of brightest LS objects to mark from --brightest-csv (default: {DEFAULT_BRIGHTEST_COUNT}).",
     )
     parser.add_argument(
         "--label-chars",
@@ -364,6 +505,8 @@ def main() -> None:
     args = parse_args()
     if args.label_chars <= 0:
         raise SystemExit("--label-chars must be greater than 0")
+    if args.brightest_count <= 0:
+        raise SystemExit("--brightest-count must be greater than 0")
 
     download_decal_image(
         args.index,
@@ -374,7 +517,9 @@ def main() -> None:
         fraction_size=args.fraction_size,
         fits_format=args.fits,
         keep_raw_fits=args.keep_raw_fits,
-        catalog_dir=args.catalog_dir.expanduser().resolve() if args.catalog_dir else None,
+        catalog_csv=args.catalog_csv.expanduser().resolve() if args.catalog_csv else None,
+        brightest_csv=args.brightest_csv.expanduser().resolve() if args.brightest_csv else None,
+        brightest_count=args.brightest_count,
         label_chars=args.label_chars,
     )
 

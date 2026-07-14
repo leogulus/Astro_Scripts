@@ -5,128 +5,16 @@ A collection of Python scripts and notebooks for retrieving astronomical imaging
 ---
 
 ## Table of Contents
-* [1. DECaLS Image Downloader (`decal_image_download.py`)](#1-decals-image-downloader-decal_image_downloadpy)
-* [2. SDSS Catalog Downloader (`download_SDSS_catalog_withSciServer.ipynb`)](#2-sdss-catalog-downloader-download_sdss_catalog_withsciserveripynb)
-* [3. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)](#3-ls-dr10-photometry-downloader-ls_dr10_catalog_downloadpy)
-* [4. DESI Spectra Downloader (`desi_download_spectra.py`)](#4-desi-spectra-downloader-desi_download_spectrapy)
+* [1. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)](#1-ls-dr10-photometry-downloader-ls_dr10_catalog_downloadpy)
+* [2. DESI Spectra Downloader (`desi_download_spectra.py`)](#2-desi-spectra-downloader-desi_download_spectrapy)
+* [3. DECaLS Image Downloader (`decal_image_download.py`)](#3-decals-image-downloader-decal_image_downloadpy)
+* [4. SDSS Catalog Downloader (`download_SDSS_catalog_withSciServer.ipynb`)](#4-sdss-catalog-downloader-download_sdss_catalog_withsciserveripynb)
 
 ---
 
-## 1. DECaLS Image Downloader (`decal_image_download.py`)
+## 1. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)
 
-Downloads optical images directly from the [DECaLS servers](https://www.legacysurvey.org/decamls/).
-
-### Requirements
-
-* `numpy`
-* `matplotlib`
-* `astropy`
-
-### Usage
-```bash
-python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_size>
-```
-
-Both `<redshift>` and `<fraction_size>` are optional:
-
-* default redshift: `0.2`
-* default fraction size: `1`
-
-### Arguments
-
-* `<index>`: Identifier index or row number.
-* `<ra>`: Right Ascension (in degrees).
-* `<dec>`: Declination (in degrees).
-* `<name>`: Output file name/prefix.
-* `<redshift>`: Target redshift used for the physical scale label *(default: `0.2`)*. Set to `0` if unknown.
-* `<fraction_size>`: Resolution scaling factor *(default: `1`)*.
-* `--fits`: Download a FITS cube instead of an annotated JPEG.
-* `--keep-raw-fits`: Keep the original downloaded FITS file alongside the reordered output.
-* `--catalog-dir`: Directory containing `object_catalog.csv` from `desi_download_spectra.py`. When provided, the JPEG output marks those catalog objects on the image.
-* `--label-chars`: Number of leading `sparcl_id` characters to display beside each marker *(default: `3`)*.
-
-`fraction_size` examples:
-`1` = 2048 px
-`2` = 2048 / 2 px
-`4` = 2048 / 4 px *(Increase value to zoom in and reduce file size)*
-
-### Examples
-
-* **Download JPEG:**
-```bash
-python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4
-```
-
-* **Download JPEG using the default redshift (`0.2`) and default image size:**
-```bash
-python decal_image_download.py 1 57.8554 -15.4054 test
-```
-
-* **Download FITS file:**
-```bash
-python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits
-```
-
-* **Download FITS file and keep the original raw download too:**
-```bash
-python decal_image_download.py 1 57.8554 -15.4054 test 0.2 4 --fits --keep-raw-fits
-```
-
-* **Download a JPEG and overlay DESI catalog objects from an existing output directory:**
-```bash
-python decal_image_download.py 1 140.1704 2.7832 clstr01 0 4 --catalog-dir clstr01
-```
-
-### Output
-
-* JPEG mode writes an annotated image named like `img_ix00001_annoted_test.jpg`
-* FITS mode writes a reordered FITS cube named like `img_ix00001_annoted_test.fits`
-
-The original FITS cube downloaded from the DECaLS server has the band order wrong for SAOImage DS9 RGB display. This script automatically reorders the downloaded cube before saving the final FITS output, so no second fix-up script is needed.
-
-The JPEG annotation includes a real 1 arcmin scale bar computed from the DECaLS pixel scale (`0.262` arcsec/px), plus a physical-size label in kpc at the chosen redshift.
-
-### DESI Marker Overlay
-
-When `--catalog-dir` is used, the script reads `object_catalog.csv` from that directory and overlays the catalog objects on the JPEG cutout.
-
-The marker positions are computed using:
-
-* the input `ra` and `dec` as the image center
-* the DECaLS JPEG pixel scale of `0.262` arcsec/px
-
-This mode does not use WCS; it uses sky-coordinate offsets from the image center and converts them directly into pixel offsets.
-
-### DS9 Note
-
-If you want to open the FITS cube in SAOImage DS9 as an RGB image, first go to `Frame -> RGB`, then choose `File -> Open As -> RGB Cube`.
-
----
-
-## 2. SDSS Catalog Downloader (`download_SDSS_catalog_withSciServer.ipynb`)
-
-A Jupyter Notebook designed to query and download SDSS catalog data using the SciServer environment.
-
-> [!IMPORTANT]
-> This notebook relies on SciServer internal libraries and **cannot be run locally**. It must be executed within the SciServer Compute environment.
-
-### Setup Instructions
-
-1. Create an account at the [SciServer Login Portal](https://apps.sciserver.org/login-portal/).
-2. Follow the setup steps in the [SciServer Example-Notebooks Installation Guide](https://github.com/sciserver/Example-Notebooks#installation).
-3. Create a persistent directory under `/Storage/<username>/persistent/`.
-4. Upload this notebook into that folder and run it within a SciServer Compute container.
-
-### Useful Resources 
-
-* **SQL Querying:** Data retrieval is handled via SQL. See this [W3Schools SQL Tutorial](https://www.w3schools.com/sql/) for a quick refresher.
-* **SDSS Schema:** Column descriptions for all SDSS database tables are available at the [SkyServer DR14 Table Descriptions](https://skyserver.sdss.org/dr14/en/help/docs/tabledesc.aspx).
-
----
-
-## 3. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)
-
-Queries the Legacy Surveys DR10 Tractor catalog via the [NOIRLab TAP service](https://datalab.noirlab.edu/tap) to extract multi-band photometry (optical + WISE) within a user-defined sky box. 
+Queries the Legacy Surveys DR10 Tractor catalog via the [NOIRLab TAP service](https://datalab.noirlab.edu/tap) to extract multi-band photometry (optical + WISE) within a user-defined sky box.
 
 More Information about LS DR10: https://datalab.noirlab.edu/data/legacy-surveys
 
@@ -138,7 +26,6 @@ More Information about LS DR10: https://datalab.noirlab.edu/data/legacy-surveys
 
 This script intentionally performs a fast RA/Dec box search instead of a true cone search.
 The returned table may include some sources near the corners of the box that fall outside a circular radius, which can be filtered manually afterward if needed.
-
 
 ### Usage
 
@@ -159,13 +46,13 @@ python ls_dr10_catalog_download.py --ra <ra> --dec <dec> --name <name> --radius 
 Query sources around a target galaxy cluster:
 
 ```bash
-python ls_dr10_catalog_download.py --ra 150.11632 --dec 2.20583 --name clusterA --radius 0.02
+python ls_dr10_catalog_download.py --ra 64.3950417 --dec -11.9110306 --name macs0417 --radius 0.02
 ```
 
 Save the result to a specific directory:
 
 ```bash
-python ls_dr10_catalog_download.py --ra 150.11632 --dec 2.20583 --name clusterA --radius 0.02 --output-dir output_catalogs
+python ls_dr10_catalog_download.py --ra 64.3950417 --dec -11.9110306 --name macs0417 --radius 0.02 --output-dir output_catalogs
 ```
 
 ### Output
@@ -183,7 +70,8 @@ It also prints the RA/Dec bounds of the search box and the number of sources ret
 The script returns a CSV file containing:
 
 * **Astrometry:** `ra`, `dec`
-* **Photometry:** Optical and WISE fluxes (dereddened) and flux inverse variances (`flux_ivar`)
+* **Photometry:** Native observed fluxes (`flux_*`), observed magnitudes (`mag_*`), dereddened fluxes (`dered_flux_*`), and dereddened magnitudes (`dered_mag_*`)
+* **Uncertainties / Quality:** Flux inverse variances (`flux_ivar_*`) and signal-to-noise ratios (`snr_*`)
 * **Metadata:** Galactic transmission factors, morphology types, and quality flags
 
 ### SED Photometry Calculations
@@ -207,7 +95,7 @@ mag_err = (2.5 / ln(10)) / (flux * sqrt(flux_ivar))
 
 ---
 
-## 4. DESI Spectra Downloader (`desi_download_spectra.py`)
+## 2. DESI Spectra Downloader (`desi_download_spectra.py`)
 
 Queries the SPARCL catalog for DESI spectra around one sky position or a batch of positions, downloads the spectra, and saves both data products and diagnostic plots.
 
@@ -268,7 +156,7 @@ python desi_download_spectra.py --ra <ra> --dec <dec> --radius <radius> --output
 Example:
 
 ```bash
-python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --output clstr01
+python desi_download_spectra.py --ra 64.3950417 --dec -11.9110306 --radius 0.02 --output macs0417
 ```
 
 ### Batch Usage With CSV
@@ -283,8 +171,7 @@ The included example file [targets.csv](/Users/taweewat/Documents/Softwares/Astr
 
 ```csv
 name,ra,dec,radius,output
-cluster_a,140.1704,2.7832,0.02,clstr01
-cluster_b,150.1163,2.2058,0.03,clstr02
+macs0417,64.3950417,-11.9110306,0.02,macs0417
 ```
 
 Required CSV columns:
@@ -327,13 +214,13 @@ This helps reduce obvious repeated entries while keeping the better-fit DESI sol
 If you already have output directories with `object_catalog.csv` and `spectrum_*.npz`, you can regenerate the PNG plots without doing the cone search, DESI joins, or SPARCL download again.
 
 ```bash
-python desi_download_spectra.py --replot-dirs clstr01 clstr02
+python desi_download_spectra.py --replot-dirs macs0417
 ```
 
 This mode also works with plot options such as:
 
 ```bash
-python desi_download_spectra.py --replot-dirs clstr01 clstr02 --show-model --no-smooth
+python desi_download_spectra.py --replot-dirs macs0417 --show-model --no-smooth
 ```
 
 ### Output
@@ -344,3 +231,148 @@ For each target, the script writes:
 * `spectrum_<sparcl_id>.npz`: Saved spectrum arrays and metadata
 * `spectrum_<sparcl_id>.png`: Plot of the spectrum, unless `--no-plots` is used
 * `download_complete.txt`: Sentinel file marking the target as complete
+
+---
+
+## 3. DECaLS Image Downloader (`decal_image_download.py`)
+
+Downloads optical images directly from the [DECaLS servers](https://www.legacysurvey.org/decamls/).
+
+### Requirements
+
+* `numpy`
+* `matplotlib`
+* `astropy`
+
+### Usage
+
+```bash
+python decal_image_download.py <index> <ra> <dec> <name> <redshift> <fraction_size>
+```
+
+Both `<redshift>` and `<fraction_size>` are optional:
+
+* default redshift: `0.2`
+* default fraction size: `1`
+
+### Arguments
+
+* `<index>`: Identifier index or row number.
+* `<ra>`: Right Ascension (in degrees).
+* `<dec>`: Declination (in degrees).
+* `<name>`: Output file name/prefix.
+* `<redshift>`: Target redshift used for the physical scale label *(default: `0.2`)*. Set to `0` if unknown.
+* `<fraction_size>`: Resolution scaling factor *(default: `1`)*.
+* `--fits`: Download a FITS cube instead of an annotated JPEG.
+* `--keep-raw-fits`: Keep the original downloaded FITS file alongside the reordered output.
+* `--catalog-csv`: Path to `object_catalog.csv` from `desi_download_spectra.py`. When provided, the JPEG output marks those catalog objects on the image.
+* `--brightest-csv`: Path to a CSV from `ls_dr10_catalog_download.py`. When provided, the JPEG output marks the brightest LS objects using `mag_i`.
+* `--brightest-count`: Number of brightest LS objects to mark from `--brightest-csv` *(default: `5`)*.
+* `--label-chars`: Number of leading `sparcl_id` characters to display beside each marker *(default: `3`)*.
+
+`fraction_size` examples:
+`1` = 2048 px
+`2` = 2048 / 2 px
+`4` = 2048 / 4 px *(Increase value to zoom in and reduce file size)*
+
+### Examples
+
+* **Download JPEG:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4
+```
+
+* **Download JPEG using the default redshift (`0.2`) and default image size:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417
+```
+
+* **Download FITS file:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --fits
+```
+
+* **Download FITS file and keep the original raw download too:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --fits --keep-raw-fits
+```
+
+* **Download a JPEG and overlay DESI catalog objects from an existing catalog CSV:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --catalog-csv macs0417/object_catalog.csv
+```
+
+* **Download a JPEG and overlay the 5 brightest LS DR10 sources from a photometry CSV:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --brightest-csv macs0417/ls_dr10_macs0417_ra64.39504_dec-11.91103_r0.02000.csv
+```
+
+* **Download a JPEG with both DESI and LS overlays at the same time:**
+
+```bash
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --catalog-csv macs0417/object_catalog.csv --brightest-csv macs0417/ls_dr10_macs0417_ra64.39504_dec-11.91103_r0.02000.csv
+```
+
+### Output
+
+* JPEG mode writes an annotated image named like `img_ix00001_annoted_test.jpg`
+* JPEG mode adds suffixes when overlays are used:
+  `..._desi.jpg`, `..._lsbright.jpg`, or `..._desi_lsbright.jpg`
+* FITS mode writes a reordered FITS cube named like `img_ix00001_annoted_test.fits`
+
+The original FITS cube downloaded from the DECaLS server has the band order wrong for SAOImage DS9 RGB display. This script automatically reorders the downloaded cube before saving the final FITS output, so no second fix-up script is needed.
+
+The JPEG annotation includes a real 1 arcmin scale bar computed from the DECaLS pixel scale (`0.262` arcsec/px), plus a physical-size label in kpc at the chosen redshift.
+
+### DESI Marker Overlay
+
+When `--catalog-csv` is used, the script reads that `object_catalog.csv` file and overlays the catalog objects on the JPEG cutout.
+
+Each DESI marker is drawn as a hollow cyan circle and labeled with:
+
+* the first `--label-chars` characters of `sparcl_id`
+* the object redshift as `z=...` with 2 decimal places, when the `redshift` column is available in `object_catalog.csv`
+
+The marker positions are computed using:
+
+* the input `ra` and `dec` as the image center
+* the DECaLS JPEG pixel scale of `0.262` arcsec/px
+
+This mode does not use WCS; it uses sky-coordinate offsets from the image center and converts them directly into pixel offsets.
+
+### LS Brightest Overlay
+
+When `--brightest-csv` is used, the script reads the LS DR10 CSV, sorts by `mag_i`, and marks the brightest rows on the JPEG cutout.
+
+Each LS marker is drawn as a hollow yellow circle and labeled with `mag_i` to 1 decimal place.
+
+### DS9 Note
+
+If you want to open the FITS cube in SAOImage DS9 as an RGB image, first go to `Frame -> RGB`, then choose `File -> Open As -> RGB Cube`.
+
+---
+
+## 4. SDSS Catalog Downloader (`download_SDSS_catalog_withSciServer.ipynb`)
+
+A Jupyter Notebook designed to query and download SDSS catalog data using the SciServer environment.
+
+> [!IMPORTANT]
+> This notebook relies on SciServer internal libraries and **cannot be run locally**. It must be executed within the SciServer Compute environment.
+
+### Setup Instructions
+
+1. Create an account at the [SciServer Login Portal](https://apps.sciserver.org/login-portal/).
+2. Follow the setup steps in the [SciServer Example-Notebooks Installation Guide](https://github.com/sciserver/Example-Notebooks#installation).
+3. Create a persistent directory under `/Storage/<username>/persistent/`.
+4. Upload this notebook into that folder and run it within a SciServer Compute container.
+
+### Useful Resources
+
+* **SQL Querying:** Data retrieval is handled via SQL. See this [W3Schools SQL Tutorial](https://www.w3schools.com/sql/) for a quick refresher.
+* **SDSS Schema:** Column descriptions for all SDSS database tables are available at the [SkyServer DR14 Table Descriptions](https://skyserver.sdss.org/dr14/en/help/docs/tabledesc.aspx).
