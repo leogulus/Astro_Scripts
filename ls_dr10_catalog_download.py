@@ -42,10 +42,18 @@ def build_query(ra_min: float, ra_max: float, dec_min: float, dec_max: float) ->
     return f"""
     SELECT
         ra, dec,
+        flux_g, flux_r, flux_i, flux_z,
+        flux_w1, flux_w2,
+        mag_g, mag_r, mag_i, mag_z,
+        mag_w1, mag_w2,
         dered_flux_g, dered_flux_r, dered_flux_i, dered_flux_z,
         dered_flux_w1, dered_flux_w2,
+        dered_mag_g, dered_mag_r, dered_mag_i, dered_mag_z,
+        dered_mag_w1, dered_mag_w2,
         flux_ivar_g, flux_ivar_r, flux_ivar_i, flux_ivar_z,
         flux_ivar_w1, flux_ivar_w2,
+        snr_g, snr_r, snr_i, snr_z,
+        snr_w1, snr_w2,
         mw_transmission_g, mw_transmission_r, mw_transmission_i,
         mw_transmission_z, mw_transmission_w1, mw_transmission_w2,
         type, maskbits, shape_r,
