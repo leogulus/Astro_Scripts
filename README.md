@@ -281,9 +281,9 @@ Both `<redshift>` and `<fraction_size>` are optional:
 * `<fraction_size>`: Resolution scaling factor *(default: `1`)*.
 * `--fits`: Download a FITS cube instead of an annotated JPEG.
 * `--keep-raw-fits`: Keep the original downloaded FITS file alongside the reordered output.
-* `--catalog-csv`: Path to `object_catalog.csv` from `desi_download_spectra.py`. When provided, the JPEG output marks those catalog objects on the image. If the flag is provided without a value, the script tries to auto-create the default DESI catalog in `<name>/`.
-* `--brightest-csv`: Path to a CSV from `ls_dr10_catalog_download.py`. When provided, the JPEG output marks the brightest LS objects using `mag_i`. If the flag is provided without a value, the script auto-creates the default LS catalog in `<name>/`.
-* `--brightest-count`: Number of brightest LS objects to mark from `--brightest-csv` *(default: `5`)*.
+* `--desi-csv`: Path to `object_catalog.csv` from `desi_download_spectra.py`. When provided, the JPEG output marks those catalog objects on the image. If the flag is provided without a value, the script tries to auto-create the default DESI catalog in `<name>/`.
+* `--ls10-csv`: Path to a CSV from `ls_dr10_catalog_download.py`. When provided, the JPEG output marks the brightest LS objects using `mag_i`. If the flag is provided without a value, the script auto-creates the default LS catalog in `<name>/`.
+* `--brightest-count`: Number of brightest LS objects to mark from `--ls10-csv` *(default: `5`)*.
 * `--label-chars`: Number of leading `sparcl_id` characters to display beside each marker *(default: `3`)*.
 * `--overwrite`: Recreate the final JPEG even if it already exists.
 
@@ -321,25 +321,25 @@ python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --fits -
 * **Download a JPEG and overlay DESI catalog objects from an existing catalog CSV:**
 
 ```bash
-python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --catalog-csv macs0417/object_catalog.csv
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --desi-csv macs0417/object_catalog.csv
 ```
 
 * **Download a JPEG and overlay the 5 brightest LS DR10 sources from a photometry CSV:**
 
 ```bash
-python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --brightest-csv macs0417/ls_dr10_macs0417_ra64.39504_dec-11.91103_r0.02000.csv
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --ls10-csv macs0417/ls_dr10_macs0417_ra64.39504_dec-11.91103_r0.02000.csv
 ```
 
 * **Download a JPEG with both DESI and LS overlays at the same time:**
 
 ```bash
-python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --catalog-csv macs0417/object_catalog.csv --brightest-csv macs0417/ls_dr10_macs0417_ra64.39504_dec-11.91103_r0.02000.csv
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --desi-csv macs0417/object_catalog.csv --ls10-csv macs0417/ls_dr10_macs0417_ra64.39504_dec-11.91103_r0.02000.csv
 ```
 
 * **Download a JPEG and auto-create both overlay catalogs in `<name>/` when needed:**
 
 ```bash
-python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --catalog-csv --brightest-csv
+python decal_image_download.py 1 64.3950417 -11.9110306 macs0417 0.44 4 --desi-csv --ls10-csv
 ```
 
 * **Force regeneration of an existing JPEG output:**
@@ -361,9 +361,11 @@ The JPEG annotation includes a real 1 arcmin scale bar computed from the DECaLS 
 
 ### DESI Marker Overlay
 
-When `--catalog-csv` is used, the script reads that `object_catalog.csv` file and overlays the catalog objects on the JPEG cutout.
+When `--desi-csv` is used, the script reads that `object_catalog.csv` file and overlays the catalog objects on the JPEG cutout.
 
-If `--catalog-csv` is passed without a value, the script tries to run `desi_download_spectra.py` automatically to create the default `object_catalog.csv` inside `<name>/`. If that helper fails or times out and no catalog file is created, the JPEG is still produced without DESI markers.
+If `--desi-csv` is passed without a value, the script tries to run `desi_download_spectra.py` automatically to create the default `object_catalog.csv` inside `<name>/`.
+
+If that helper times out while contacting the remote SPARCL/NOIRLab service, the script now prints a message explaining that this is sometimes a temporary remote-service problem and that you can try the same command again. If the DESI search completes but finds no matching objects within the default `0.02 deg` radius, the script reports that too. In both cases, if no DESI catalog file is created, the JPEG is still produced without DESI markers.
 
 Each DESI marker is drawn as a hollow cyan circle and labeled with:
 
@@ -379,9 +381,9 @@ This mode does not use WCS; it uses sky-coordinate offsets from the image center
 
 ### LS Brightest Overlay
 
-When `--brightest-csv` is used, the script reads the LS DR10 CSV, sorts by `mag_i`, and marks the brightest rows on the JPEG cutout.
+When `--ls10-csv` is used, the script reads the LS DR10 CSV, sorts by `mag_i`, and marks the brightest rows on the JPEG cutout.
 
-If `--brightest-csv` is passed without a value, the script runs `ls_dr10_catalog_download.py` automatically to create the default LS catalog inside `<name>/` before drawing the markers.
+If `--ls10-csv` is passed without a value, the script runs `ls_dr10_catalog_download.py` automatically to create the default LS catalog inside `<name>/` before drawing the markers.
 
 Each LS marker is drawn as a hollow yellow circle and labeled with `mag_i` to 1 decimal place.
 

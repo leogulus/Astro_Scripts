@@ -12,6 +12,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.image as mpimg
@@ -30,6 +31,16 @@ DEFAULT_AUTO_LS_RADIUS_DEG = 0.0166667
 AUTO_INPUT_TOKEN = "__auto__"
 DESI_OBJECT_CATALOG_FILENAME = "object_catalog.csv"
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
+
+
+@dataclass
+class HelperRunResult:
+    """Capture the outcome of a helper-script execution."""
+
+    success: bool
+    stdout: str
+    stderr: str
+    returncode: int
 
 
 def positive_float(value: str) -> float:
@@ -72,19 +83,82 @@ def build_default_ls_catalog_path(output_dir: Path, name: str, ra: float, dec: f
     return output_dir / filename
 
 
-def run_helper_script(script_name: str, arguments: list[str], *, allow_failure: bool = False) -> bool:
+def run_helper_script(
+    script_name: str,
+    arguments: list[str],
+    *,
+    allow_failure: bool = False,
+) -> HelperRunResult:
     """Run another repository script using the current Python interpreter."""
     script_path = Path(__file__).with_name(script_name)
     command = [sys.executable, str(script_path), *arguments]
     print(f"Running helper: {' '.join(command)}")
     try:
-        subprocess.run(command, check=True)
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if stdout.strip():
+            print(stdout.rstrip())
+        if stderr.strip():
+            print(stderr.rstrip(), file=sys.stderr)
         if allow_failure:
             print(f"Helper script failed, continuing without it: {script_name}")
-            return False
+            return HelperRunResult(
+                success=False,
+                stdout=stdout,
+                stderr=stderr,
+                returncode=exc.returncode,
+            )
         raise SystemExit(f"Helper script failed: {script_name}") from exc
-    return True
+    if completed.stdout.strip():
+        print(completed.stdout.rstrip())
+    if completed.stderr.strip():
+        print(completed.stderr.rstrip(), file=sys.stderr)
+    return HelperRunResult(
+        success=True,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        returncode=completed.returncode,
+    )
+
+
+def describe_desi_auto_result(result: HelperRunResult | None, catalog_path: Path) -> str:
+    """Explain why the auto-generated DESI catalog is unavailable."""
+    if result is None:
+        return (
+            "DESI auto catalog is unavailable because no object_catalog.csv was found at "
+            f"{catalog_path}."
+        )
+
+    helper_output = "\n".join(part for part in [result.stdout, result.stderr] if part).lower()
+    if not result.success and any(token in helper_output for token in ["readtimeout", "timeouterror", "timed out"]):
+        return (
+            "DESI auto catalog could not be created because the SPARCL/NOIRLab request timed out. "
+            "This sometimes happens with the remote service. You can try the same command again."
+        )
+
+    if "no objects found." in helper_output:
+        return (
+            "DESI auto catalog was not created because the DESI search completed but found no matching "
+            f"objects within the default {DEFAULT_AUTO_DESI_RADIUS_DEG:.2f} deg radius."
+        )
+
+    if not result.success:
+        return (
+            "DESI auto catalog could not be created because the DESI helper script failed. "
+            "You can try the command again, or run desi_download_spectra.py manually for more detail."
+        )
+
+    return (
+        "DESI auto catalog was not created even though the DESI helper finished. "
+        "You can try the command again."
+    )
 
 
 def ensure_overlay_inputs(
@@ -92,19 +166,20 @@ def ensure_overlay_inputs(
     ra: float,
     dec: float,
     name: str,
-    catalog_csv: Path | None,
-    brightest_csv: Path | None,
+    desi_csv: Path | None,
+    ls10_csv: Path | None,
 ) -> tuple[Path | None, Path | None]:
     """Resolve overlay inputs, auto-generating missing catalogs when requested."""
-    resolved_catalog_csv = catalog_csv
-    resolved_brightest_csv = brightest_csv
+    resolved_desi_csv = desi_csv
+    resolved_ls10_csv = ls10_csv
     default_output_dir = Path(name).expanduser().resolve()
 
-    if is_auto_input(catalog_csv):
+    if is_auto_input(desi_csv):
         default_output_dir.mkdir(parents=True, exist_ok=True)
-        resolved_catalog_csv = default_output_dir / DESI_OBJECT_CATALOG_FILENAME
-        if not resolved_catalog_csv.exists():
-            run_helper_script(
+        resolved_desi_csv = default_output_dir / DESI_OBJECT_CATALOG_FILENAME
+        desi_helper_result: HelperRunResult | None = None
+        if not resolved_desi_csv.exists():
+            desi_helper_result = run_helper_script(
                 "desi_download_spectra.py",
                 [
                     "--ra",
@@ -119,23 +194,21 @@ def ensure_overlay_inputs(
                 ],
                 allow_failure=True,
             )
-        if not resolved_catalog_csv.exists():
-            print(
-                "DESI auto catalog was not created. "
-                "Continuing without DESI markers."
-            )
-            resolved_catalog_csv = None
+        if not resolved_desi_csv.exists():
+            print(describe_desi_auto_result(desi_helper_result, resolved_desi_csv))
+            print("Continuing without DESI markers.")
+            resolved_desi_csv = None
 
-    if is_auto_input(brightest_csv):
+    if is_auto_input(ls10_csv):
         default_output_dir.mkdir(parents=True, exist_ok=True)
-        resolved_brightest_csv = build_default_ls_catalog_path(
+        resolved_ls10_csv = build_default_ls_catalog_path(
             default_output_dir,
             name,
             ra,
             dec,
             DEFAULT_AUTO_LS_RADIUS_DEG,
         )
-        if not resolved_brightest_csv.exists():
+        if not resolved_ls10_csv.exists():
             run_helper_script(
                 "ls_dr10_catalog_download.py",
                 [
@@ -149,10 +222,10 @@ def ensure_overlay_inputs(
                     str(default_output_dir),
                 ],
             )
-        if not resolved_brightest_csv.exists():
-            raise SystemExit(f"Expected LS catalog was not created: {resolved_brightest_csv}")
+        if not resolved_ls10_csv.exists():
+            raise SystemExit(f"Expected LS catalog was not created: {resolved_ls10_csv}")
 
-    return resolved_catalog_csv, resolved_brightest_csv
+    return resolved_desi_csv, resolved_ls10_csv
 
 
 def download_file(url: str, destination: Path) -> None:
@@ -280,7 +353,7 @@ def read_object_catalog(csv_path: Path) -> list[dict[str, object]]:
     return rows
 
 
-def read_brightest_ls_objects(csv_path: Path, brightest_count: int) -> list[dict[str, object]]:
+def read_ls10_objects(csv_path: Path, brightest_count: int) -> list[dict[str, object]]:
     """Read an LS DR10 CSV, sort by mag_i, and keep the brightest rows."""
     if not csv_path.exists():
         raise FileNotFoundError(f"LS catalog file not found: {csv_path}")
@@ -360,7 +433,7 @@ def plot_catalog_markers(
         )
 
 
-def plot_brightest_ls_markers(
+def plot_ls10_markers(
     *,
     catalog_rows: list[dict[str, object]],
     ra_center: float,
@@ -409,8 +482,8 @@ def create_annotated_jpeg(
     fraction_size: float,
     ra_center: float,
     dec_center: float,
-    catalog_csv: Path | None,
-    brightest_csv: Path | None,
+    desi_csv: Path | None,
+    ls10_csv: Path | None,
     brightest_count: int,
     label_chars: int,
 ) -> Path:
@@ -421,8 +494,8 @@ def create_annotated_jpeg(
     figure = plt.figure(figsize=(10, 10))
     plt.imshow(image)
 
-    if catalog_csv is not None:
-        catalog_rows = read_object_catalog(catalog_csv)
+    if desi_csv is not None:
+        catalog_rows = read_object_catalog(desi_csv)
         plot_catalog_markers(
             catalog_rows=catalog_rows,
             ra_center=ra_center,
@@ -431,10 +504,10 @@ def create_annotated_jpeg(
             label_chars=label_chars,
         )
 
-    if brightest_csv is not None:
-        brightest_rows = read_brightest_ls_objects(brightest_csv, brightest_count)
-        plot_brightest_ls_markers(
-            catalog_rows=brightest_rows,
+    if ls10_csv is not None:
+        ls10_rows = read_ls10_objects(ls10_csv, brightest_count)
+        plot_ls10_markers(
+            catalog_rows=ls10_rows,
             ra_center=ra_center,
             dec_center=dec_center,
             image_size=image_size,
@@ -453,14 +526,14 @@ def build_jpeg_output_path(
     *,
     index: int,
     name: str,
-    catalog_csv: Path | None,
-    brightest_csv: Path | None,
+    desi_csv: Path | None,
+    ls10_csv: Path | None,
 ) -> Path:
     """Build a JPEG output path that keeps overlay variants separate."""
     suffix_parts: list[str] = []
-    if catalog_csv is not None:
+    if desi_csv is not None:
         suffix_parts.append("desi")
-    if brightest_csv is not None:
+    if ls10_csv is not None:
         suffix_parts.append("lsbright")
 
     suffix = ""
@@ -480,8 +553,8 @@ def download_decal_image(
     *,
     fits_format: bool = False,
     keep_raw_fits: bool = False,
-    catalog_csv: Path | None = None,
-    brightest_csv: Path | None = None,
+    desi_csv: Path | None = None,
+    ls10_csv: Path | None = None,
     brightest_count: int = DEFAULT_BRIGHTEST_COUNT,
     label_chars: int = 3,
     overwrite: bool = False,
@@ -511,8 +584,8 @@ def download_decal_image(
     output_path = build_jpeg_output_path(
         index=index,
         name=name,
-        catalog_csv=catalog_csv,
-        brightest_csv=brightest_csv,
+        desi_csv=desi_csv,
+        ls10_csv=ls10_csv,
     )
     if output_path.exists() and not overwrite:
         print(f"Output already exists, skipping download: {output_path}")
@@ -532,8 +605,8 @@ def download_decal_image(
             fraction_size=fraction_size,
             ra_center=ra,
             dec_center=dec,
-            catalog_csv=catalog_csv,
-            brightest_csv=brightest_csv,
+            desi_csv=desi_csv,
+            ls10_csv=ls10_csv,
             brightest_count=brightest_count,
             label_chars=label_chars,
         )
@@ -584,7 +657,8 @@ def parse_args() -> argparse.Namespace:
         help="Keep the original downloaded FITS cube alongside the DS9-friendly version.",
     )
     parser.add_argument(
-        "--catalog-csv",
+        "--desi-csv",
+        dest="desi_csv",
         nargs="?",
         type=Path,
         const=Path(AUTO_INPUT_TOKEN),
@@ -594,7 +668,8 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--brightest-csv",
+        "--ls10-csv",
+        dest="ls10_csv",
         nargs="?",
         type=Path,
         const=Path(AUTO_INPUT_TOKEN),
@@ -607,7 +682,7 @@ def parse_args() -> argparse.Namespace:
         "--brightest-count",
         type=int,
         default=DEFAULT_BRIGHTEST_COUNT,
-        help=f"Number of brightest LS objects to mark from --brightest-csv (default: {DEFAULT_BRIGHTEST_COUNT}).",
+        help=f"Number of brightest LS objects to mark from --ls10-csv (default: {DEFAULT_BRIGHTEST_COUNT}).",
     )
     parser.add_argument(
         "--label-chars",
@@ -630,22 +705,22 @@ def main() -> None:
     if args.brightest_count <= 0:
         raise SystemExit("--brightest-count must be greater than 0")
 
-    catalog_csv = args.catalog_csv.expanduser().resolve() if args.catalog_csv and not is_auto_input(args.catalog_csv) else args.catalog_csv
-    brightest_csv = args.brightest_csv.expanduser().resolve() if args.brightest_csv and not is_auto_input(args.brightest_csv) else args.brightest_csv
-    catalog_csv, brightest_csv = ensure_overlay_inputs(
+    desi_csv = args.desi_csv.expanduser().resolve() if args.desi_csv and not is_auto_input(args.desi_csv) else args.desi_csv
+    ls10_csv = args.ls10_csv.expanduser().resolve() if args.ls10_csv and not is_auto_input(args.ls10_csv) else args.ls10_csv
+    desi_csv, ls10_csv = ensure_overlay_inputs(
         ra=args.ra,
         dec=args.dec,
         name=args.name,
-        catalog_csv=catalog_csv,
-        brightest_csv=brightest_csv,
+        desi_csv=desi_csv,
+        ls10_csv=ls10_csv,
     )
 
     if not args.fits:
         planned_output_path = build_jpeg_output_path(
             index=args.index,
             name=args.name,
-            catalog_csv=catalog_csv,
-            brightest_csv=brightest_csv,
+            desi_csv=desi_csv,
+            ls10_csv=ls10_csv,
         )
         if planned_output_path.exists() and not args.overwrite:
             print(f"Output already exists, skipping download: {planned_output_path}")
@@ -660,8 +735,8 @@ def main() -> None:
         fraction_size=args.fraction_size,
         fits_format=args.fits,
         keep_raw_fits=args.keep_raw_fits,
-        catalog_csv=catalog_csv,
-        brightest_csv=brightest_csv,
+        desi_csv=desi_csv,
+        ls10_csv=ls10_csv,
         brightest_count=args.brightest_count,
         label_chars=args.label_chars,
         overwrite=args.overwrite,
