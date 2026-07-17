@@ -74,15 +74,23 @@ DEFAULT_COLUMNS = [
 def positive_float(value: str) -> float:
     """Parse a positive float for argparse."""
     parsed = float(value)
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than 0")
     return parsed
+
+
+def ra_degrees(value: str) -> float:
+    """Parse and normalize a right ascension value in degrees."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("right ascension must be finite")
+    return parsed % 360.0
 
 
 def dec_degrees(value: str) -> float:
     """Parse a declination value in degrees."""
     parsed = float(value)
-    if not -90 <= parsed <= 90:
+    if not math.isfinite(parsed) or not -90 <= parsed <= 90:
         raise argparse.ArgumentTypeError("declination must be between -90 and 90 degrees")
     return parsed
 
@@ -128,19 +136,31 @@ def build_query(
 ) -> str:
     """Build a fast RA/Dec box query for LS DR10."""
     column_lines = ",\n        ".join(selected_columns)
+    ra_clause = build_ra_clause(ra_min, ra_max)
     return f"""
     SELECT
         {column_lines}
     FROM {TRACTOR_TABLE}
-    WHERE ra BETWEEN {ra_min:.10f} AND {ra_max:.10f}
+    WHERE {ra_clause}
       AND dec BETWEEN {dec_min:.10f} AND {dec_max:.10f}
     """
 
 
+def build_ra_clause(ra_min: float, ra_max: float) -> str:
+    """Build an RA predicate that remains correct across the 0/360-degree seam."""
+    if ra_max - ra_min >= 360:
+        return "1 = 1"
+    normalized_min = ra_min % 360.0
+    normalized_max = ra_max % 360.0
+    if normalized_min <= normalized_max and 0 <= ra_min and ra_max < 360:
+        return f"ra BETWEEN {normalized_min:.10f} AND {normalized_max:.10f}"
+    return f"(ra >= {normalized_min:.10f} OR ra <= {normalized_max:.10f})"
+
+
 def compute_box_bounds(ra_deg: float, dec_deg: float, radius_deg: float) -> tuple[float, float, float, float]:
     """Return the RA/Dec bounds for a box centered on the target position."""
-    dec_min = dec_deg - radius_deg
-    dec_max = dec_deg + radius_deg
+    dec_min = max(-90.0, dec_deg - radius_deg)
+    dec_max = min(90.0, dec_deg + radius_deg)
 
     cos_dec = max(abs(math.cos(math.radians(dec_deg))), 1e-6)
     ra_delta = radius_deg / cos_dec
@@ -254,7 +274,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ra",
-        type=float,
+        type=ra_degrees,
         help="Central right ascension in degrees.",
     )
     parser.add_argument(

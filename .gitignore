@@ -139,3 +139,7 @@ img_ix*_annoted_*.jpg
 img_ix*_annoted_*.fits
 img_ix*_annoted_*_raw.fits
 ls_dr10_*.csv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

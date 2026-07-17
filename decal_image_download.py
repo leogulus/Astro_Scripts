@@ -7,9 +7,11 @@ import argparse
 import csv
 import math
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -24,10 +26,12 @@ from astropy.io import fits
 
 PIXEL_SCALE_ARCSEC = 0.262
 BASE_IMAGE_SIZE = 2048
+JPEG_EXPORT_SIZE_PX = 1200
 SURVEY_LAYER = "ls-dr9"
 DEFAULT_BRIGHTEST_COUNT = 5
 DEFAULT_AUTO_DESI_RADIUS_DEG = 0.02
 DEFAULT_AUTO_LS_RADIUS_DEG = 0.0166667
+DOWNLOAD_RETRY_ATTEMPTS = 3
 AUTO_INPUT_TOKEN = "__auto__"
 DESI_OBJECT_CATALOG_FILENAME = "object_catalog.csv"
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
@@ -46,8 +50,32 @@ class HelperRunResult:
 def positive_float(value: str) -> float:
     """Parse a positive float for argparse."""
     parsed = float(value)
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
+def ra_degrees(value: str) -> float:
+    """Parse and normalize a right ascension value in degrees."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("right ascension must be finite")
+    return parsed % 360.0
+
+
+def dec_degrees(value: str) -> float:
+    """Parse a declination value in degrees."""
+    parsed = float(value)
+    if not math.isfinite(parsed) or not -90 <= parsed <= 90:
+        raise argparse.ArgumentTypeError("declination must be between -90 and 90 degrees")
+    return parsed
+
+
+def nonnegative_float(value: str) -> float:
+    """Parse a finite, non-negative float for redshift."""
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("value must be zero or greater")
     return parsed
 
 
@@ -229,9 +257,27 @@ def ensure_overlay_inputs(
 
 
 def download_file(url: str, destination: Path) -> None:
-    """Download a remote file to disk."""
+    """Download a remote file atomically, with a bounded network timeout."""
     print(f"Downloading: {url}")
-    urllib.request.urlretrieve(url, destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as handle:
+        temporary_path = Path(handle.name)
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "Astro-Scripts/1.0"})
+        for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response, temporary_path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+                temporary_path.replace(destination)
+                return
+            except (urllib.error.URLError, OSError, TimeoutError):
+                if attempt == DOWNLOAD_RETRY_ATTEMPTS:
+                    raise
+                print(f"Download failed on attempt {attempt}/{DOWNLOAD_RETRY_ATTEMPTS}; retrying...")
+                time.sleep(attempt)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 def compute_physical_scale_kpc(redshift: float) -> float | None:
@@ -491,8 +537,12 @@ def create_annotated_jpeg(
     image = mpimg.imread(temp_image_path)
     image_size = image.shape[0]
 
-    figure = plt.figure(figsize=(10, 10))
-    plt.imshow(image)
+    figure = plt.figure(
+        figsize=(JPEG_EXPORT_SIZE_PX / 120, JPEG_EXPORT_SIZE_PX / 120),
+        dpi=120,
+    )
+    axis = figure.add_axes([0, 0, 1, 1])
+    axis.imshow(image)
 
     if desi_csv is not None:
         catalog_rows = read_object_catalog(desi_csv)
@@ -516,7 +566,6 @@ def create_annotated_jpeg(
     draw_scale_bar(image_size=image_size, redshift=redshift, name=name)
 
     format_axes(figure)
-    plt.tight_layout()
     plt.savefig(output_path, dpi=120)
     plt.close()
     return output_path
@@ -561,11 +610,16 @@ def download_decal_image(
 ) -> Path:
     """Download a DECaLS cutout as a JPEG or a DS9-friendly FITS file."""
     size = int(BASE_IMAGE_SIZE / fraction_size)
+    if size < 1:
+        raise ValueError(f"fraction_size must be no greater than {BASE_IMAGE_SIZE}")
     url = build_cutout_url(ra, dec, size, fits_format=fits_format, pxscale=PIXEL_SCALE_ARCSEC)
 
     if fits_format:
         output_path = Path(f"img_ix{index:05d}_annoted_{name}.fits")
         raw_path = output_path.with_name(f"{output_path.stem}_raw.fits")
+        if output_path.exists() and not overwrite:
+            print(f"Output already exists, skipping download: {output_path}")
+            return output_path
 
         try:
             download_file(url, raw_path)
@@ -629,12 +683,12 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("index", type=int, help="Identifier index or row number.")
-    parser.add_argument("ra", type=float, help="Right ascension in degrees.")
-    parser.add_argument("dec", type=float, help="Declination in degrees.")
+    parser.add_argument("ra", type=ra_degrees, help="Right ascension in degrees.")
+    parser.add_argument("dec", type=dec_degrees, help="Declination in degrees.")
     parser.add_argument("name", help="Object name used in the output filename.")
     parser.add_argument(
         "redshift",
-        type=float,
+        type=nonnegative_float,
         nargs="?",
         default=0.2,
         help="Target redshift used for the physical scale label (default: 0.2). Use 0 if it is unknown.",

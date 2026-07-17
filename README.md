@@ -10,6 +10,19 @@ A collection of Python scripts and notebooks for retrieving astronomical imaging
 * [3. DECaLS Image Downloader (`decal_image_download.py`)](#3-decals-image-downloader-decal_image_downloadpy)
 * [4. SDSS Catalog Downloader (`download_SDSS_catalog_withSciServer.ipynb`)](#4-sdss-catalog-downloader-download_sdss_catalog_withsciserveripynb)
 
+## Setup
+
+Use Python 3.11 in a dedicated environment, especially for the DESI workflow:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+The scripts validate coordinates and retry remote requests where supported, but survey services can still be temporarily unavailable. Outputs are intentionally ignored by Git so that large downloads do not enter the repository.
+
 ---
 
 ## 1. LS DR10 Photometry Downloader (`ls_dr10_catalog_download.py`)

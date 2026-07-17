@@ -88,6 +88,7 @@ DESI_JOIN_SELECT_COLUMNS = [
 JOIN_CHUNK_SIZE = 500
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY = 3.0
+RETRIEVE_CHUNK_SIZE = 100
 CATALOG_COLUMN_PRESETS = {
     "default": [
         "sparcl_id",
@@ -172,15 +173,23 @@ CATALOG_COLUMN_PRESETS = {
 def positive_float(value: str) -> float:
     """Parse a positive float for argparse."""
     parsed = float(value)
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than 0")
     return parsed
+
+
+def ra_degrees(value: str) -> float:
+    """Parse and normalize a right ascension value in degrees."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("right ascension must be finite")
+    return parsed % 360.0
 
 
 def dec_degrees(value: str) -> float:
     """Parse a declination value in degrees."""
     parsed = float(value)
-    if not -90 <= parsed <= 90:
+    if not math.isfinite(parsed) or not -90 <= parsed <= 90:
         raise argparse.ArgumentTypeError("declination must be between -90 and 90 degrees")
     return parsed
 
@@ -235,23 +244,36 @@ def cone_query_sql(
     ra_width = radius_deg / cos_dec
     ra_min = ra_deg - ra_width
     ra_max = ra_deg + ra_width
-    dec_min = dec_deg - radius_deg
-    dec_max = dec_deg + radius_deg
+    dec_min = max(-90.0, dec_deg - radius_deg)
+    dec_max = min(90.0, dec_deg + radius_deg)
+    ra_clause = build_ra_clause(ra_min, ra_max)
+    angular_distance = (
+        f"acos(sin(radians(dec))*sin(radians({dec_deg:.10f})) + "
+        f"cos(radians(dec))*cos(radians({dec_deg:.10f}))*cos(radians(ra-{ra_deg:.10f})))"
+    )
 
     return f"""
     SELECT {", ".join(SPARCL_SELECT_COLUMNS)}
     FROM {table}
     WHERE
-        ra BETWEEN {ra_min:.10f} AND {ra_max:.10f}
+        {ra_clause}
         AND dec BETWEEN {dec_min:.10f} AND {dec_max:.10f}
-        AND acos(
-            sin(radians(dec))*sin(radians({dec_deg:.10f})) +
-            cos(radians(dec))*cos(radians({dec_deg:.10f}))*
-            cos(radians(ra-{ra_deg:.10f}))
-        ) <= radians({radius_deg:.10f})
+        AND {angular_distance} <= radians({radius_deg:.10f})
         AND {extra_where}
+    ORDER BY {angular_distance} ASC
     LIMIT {limit}
     """
+
+
+def build_ra_clause(ra_min: float, ra_max: float) -> str:
+    """Build an RA predicate that remains correct across the 0/360-degree seam."""
+    if ra_max - ra_min >= 360:
+        return "1 = 1"
+    normalized_min = ra_min % 360.0
+    normalized_max = ra_max % 360.0
+    if normalized_min <= normalized_max and 0 <= ra_min and ra_max < 360:
+        return f"ra BETWEEN {normalized_min:.10f} AND {normalized_max:.10f}"
+    return f"(ra >= {normalized_min:.10f} OR ra <= {normalized_max:.10f})"
 
 
 def cone_query(
@@ -444,21 +466,21 @@ def save_spectrum(results, index: int, output_dir: Path) -> Path:
         return np.asarray(value[index])
 
     output_path = output_dir / f"spectrum_{sparcl_id}.npz"
-    np.savez(
-        output_path,
-        wavelength=np.asarray(results.spectral_axis),
-        flux=np.asarray(results.flux[index]),
-        model=array_meta("model"),
-        ivar=array_meta("ivar"),
-        mask=array_meta("mask"),
-        wave_sigma=array_meta("wave_sigma"),
-        sparcl_id=sparcl_id,
-        redshift=metadata_value(results.meta, "redshift", index),
-        specid=metadata_value(results.meta, "specid", index),
-        spectype=metadata_value(results.meta, "spectype", index),
-        ra=metadata_value(results.meta, "ra", index),
-        dec=metadata_value(results.meta, "dec", index),
-    )
+    payload = {
+        "wavelength": np.asarray(results.spectral_axis),
+        "flux": np.asarray(results.flux[index]) if np.ndim(results.flux) != 1 else np.asarray(results.flux),
+        "sparcl_id": str(sparcl_id),
+        "redshift": safe_float(metadata_value(results.meta, "redshift", index), default=float("nan")),
+        "specid": str(metadata_value(results.meta, "specid", index) or ""),
+        "spectype": str(metadata_value(results.meta, "spectype", index) or ""),
+        "ra": safe_float(metadata_value(results.meta, "ra", index), default=float("nan")),
+        "dec": safe_float(metadata_value(results.meta, "dec", index), default=float("nan")),
+    }
+    for key in ("model", "ivar", "mask", "wave_sigma"):
+        value = array_meta(key)
+        if value is not None:
+            payload[key] = value
+    np.savez(output_path, **payload)
     return output_path
 
 
@@ -593,7 +615,7 @@ def replot_directory(
 
     print(f"\n=== Replotting {output_dir} ===")
     for index, spectrum_path in enumerate(spectrum_files, start=1):
-        with np.load(spectrum_path, allow_pickle=True) as data:
+        with np.load(spectrum_path, allow_pickle=False) as data:
             sparcl_id = str(data["sparcl_id"])
             metadata = {
                 "sparcl_id": sparcl_id,
@@ -650,6 +672,24 @@ def read_targets_csv(csv_path: Path) -> list[dict[str, str]]:
             raise ValueError(f"CSV file is missing required columns: {sorted(missing)}")
 
         return list(reader)
+
+
+def parse_target_row(row: dict[str, str], row_number: int) -> tuple[str, float, float, float, Path]:
+    """Validate one batch CSV row and return normalized target values."""
+    try:
+        name = row["name"].strip()
+        if not name:
+            raise ValueError("name is empty")
+        ra = ra_degrees(row["ra"])
+        dec = dec_degrees(row["dec"])
+        radius = positive_float(row["radius"])
+    except (KeyError, TypeError, ValueError, argparse.ArgumentTypeError) as exc:
+        raise ValueError(f"row {row_number}: invalid target data ({exc})") from exc
+
+    output_name = (row.get("output") or name).strip()
+    if not output_name:
+        raise ValueError(f"row {row_number}: output is empty")
+    return name, ra, dec, radius, Path(output_name)
 
 
 def include_fields(show_model: bool) -> list[str]:
@@ -743,40 +783,54 @@ def process_target(
     catalog_path = output_dir / CATALOG_FILENAME
     output_catalog.to_csv(catalog_path, index=False)
 
-    sparcl_ids = list(final_catalog["sparcl_id"])
+    sparcl_ids = [str(sparcl_id) for sparcl_id in final_catalog["sparcl_id"]]
     catalog_lookup = build_catalog_lookup(final_catalog)
-    try:
-        results = run_with_retries(
-            "Spectrum retrieval",
-            lambda: client.retrieve(
-                uuid_list=sparcl_ids,
-                include=include_fields(show_model),
-                fmt="specutils",
-            ),
-            attempts=DEFAULT_RETRY_ATTEMPTS,
-            delay_seconds=DEFAULT_RETRY_DELAY,
-        )
-    except Exception as exc:
-        raise SystemExit(f"Spectrum retrieval failed for {target_label}: {exc}") from exc
-
-    for index, sparcl_id in enumerate(sparcl_ids, start=1):
-        save_spectrum(results, index - 1, output_dir)
-        if save_plots:
-            plot_spectrum(
-                results,
-                index - 1,
-                output_dir,
-                catalog_lookup,
-                show_model=show_model,
-                show_smooth=show_smooth,
-                smooth_sigma=smooth_sigma,
-                include_absorption=include_absorption,
+    received_ids: set[str] = set()
+    processed = 0
+    for request_chunk in chunked(sparcl_ids, RETRIEVE_CHUNK_SIZE):
+        try:
+            results = run_with_retries(
+                "Spectrum retrieval",
+                lambda request_chunk=request_chunk: client.retrieve(
+                    uuid_list=request_chunk,
+                    include=include_fields(show_model),
+                    fmt="specutils",
+                ),
+                attempts=DEFAULT_RETRY_ATTEMPTS,
+                delay_seconds=DEFAULT_RETRY_DELAY,
             )
-        if index == 1 or index == len(sparcl_ids) or index % 25 == 0:
-            print(f"  Processed {index}/{len(sparcl_ids)} spectra (latest SPARCL ID: {sparcl_id})")
+        except Exception as exc:
+            raise SystemExit(f"Spectrum retrieval failed for {target_label}: {exc}") from exc
+
+        returned_ids = [str(value) for value in results.meta.get("sparcl_id", [])]
+        for result_index, sparcl_id in enumerate(returned_ids):
+            if sparcl_id not in request_chunk or sparcl_id in received_ids:
+                print(f"  Ignoring unexpected or duplicate returned SPARCL ID: {sparcl_id}")
+                continue
+            save_spectrum(results, result_index, output_dir)
+            if save_plots:
+                plot_spectrum(
+                    results,
+                    result_index,
+                    output_dir,
+                    catalog_lookup,
+                    show_model=show_model,
+                    show_smooth=show_smooth,
+                    smooth_sigma=smooth_sigma,
+                    include_absorption=include_absorption,
+                )
+            received_ids.add(sparcl_id)
+            processed += 1
+            if processed == 1 or processed == len(sparcl_ids) or processed % 25 == 0:
+                print(f"  Processed {processed}/{len(sparcl_ids)} spectra (latest SPARCL ID: {sparcl_id})")
+
+    missing_ids = set(sparcl_ids) - received_ids
+    if missing_ids:
+        print(f"  Incomplete retrieval: {len(missing_ids)} requested spectra were not returned; retry this target.")
+        return
 
     sentinel_path.touch()
-    print(f"  Saved {len(sparcl_ids)} spectra to {output_dir}")
+    print(f"  Saved {processed} spectra to {output_dir}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -795,7 +849,7 @@ python desi_download_spectra.py --csv targets.csv
 python desi_download_spectra.py --ra 140.1704 --dec 2.7832 --radius 0.02 --no-plots
 """,
     )
-    parser.add_argument("--ra", type=float, help="Right ascension in decimal degrees.")
+    parser.add_argument("--ra", type=ra_degrees, help="Right ascension in decimal degrees.")
     parser.add_argument("--dec", type=dec_degrees, help="Declination in decimal degrees.")
     parser.add_argument("--radius", type=positive_float, help="Cone search radius in degrees.")
     parser.add_argument(
@@ -911,14 +965,18 @@ def main() -> None:
         client = create_sparcl_client()
         total_targets = len(targets)
         for target_index, row in enumerate(targets, start=1):
-            output_name = row.get("output") or row["name"]
+            try:
+                name, ra, dec, radius, output_dir = parse_target_row(row, target_index + 1)
+            except ValueError as exc:
+                print(f"Skipping CSV target: {exc}")
+                continue
             process_target(
                 client=client,
-                ra_deg=float(row["ra"]),
-                dec_deg=float(row["dec"]),
-                radius_deg=float(row["radius"]),
-                output_dir=Path(str(output_name)),
-                target_label=str(row["name"]),
+                ra_deg=ra,
+                dec_deg=dec,
+                radius_deg=radius,
+                output_dir=output_dir,
+                target_label=name,
                 target_index=target_index,
                 total_targets=total_targets,
                 table=args.table,
