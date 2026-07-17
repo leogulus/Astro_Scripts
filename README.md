@@ -40,6 +40,8 @@ python ls_dr10_catalog_download.py --ra <ra> --dec <dec> --name <name> --radius 
 * `--name`: Label for the output CSV file.
 * `--radius`: Half-width of the search box in degrees *(default: `0.0166667`, approximately 1 arcmin)*.
 * `--output-dir`: Directory where the CSV file will be written *(default: current directory)*.
+* `--extra-columns`: Comma-separated list of additional `ls_dr10.tractor` columns to append to the default export.
+* `--list-columns`: Query `TAP_SCHEMA.columns`, print the currently available `ls_dr10.tractor` columns, and exit.
 
 ### Example
 
@@ -53,6 +55,18 @@ Save the result to a specific directory:
 
 ```bash
 python ls_dr10_catalog_download.py --ra 64.3950417 --dec -11.9110306 --name macs0417 --radius 0.02 --output-dir output_catalogs
+```
+
+Inspect which other columns can be downloaded:
+
+```bash
+python ls_dr10_catalog_download.py --list-columns
+```
+
+Append a few extra Tractor columns to the default CSV:
+
+```bash
+python ls_dr10_catalog_download.py --ra 64.3950417 --dec -11.9110306 --name macs0417 --radius 0.02 --extra-columns objid,brickid,ebv
 ```
 
 ### Output
@@ -73,6 +87,8 @@ The script returns a CSV file containing:
 * **Photometry:** Native observed fluxes (`flux_*`), observed magnitudes (`mag_*`), dereddened fluxes (`dered_flux_*`), and dereddened magnitudes (`dered_mag_*`)
 * **Uncertainties / Quality:** Flux inverse variances (`flux_ivar_*`) and signal-to-noise ratios (`snr_*`)
 * **Metadata:** Galactic transmission factors, morphology types, and quality flags
+
+If `--extra-columns` is used, those columns are appended after the default set. The script validates requested names against the live `ls_dr10.tractor` schema before running the science query.
 
 ### SED Photometry Calculations
 

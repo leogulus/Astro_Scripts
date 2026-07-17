@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import re
+import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -22,6 +25,10 @@ PIXEL_SCALE_ARCSEC = 0.262
 BASE_IMAGE_SIZE = 2048
 SURVEY_LAYER = "ls-dr9"
 DEFAULT_BRIGHTEST_COUNT = 5
+DEFAULT_AUTO_DESI_RADIUS_DEG = 0.02
+DEFAULT_AUTO_LS_RADIUS_DEG = 0.0166667
+AUTO_INPUT_TOKEN = "__auto__"
+DESI_OBJECT_CATALOG_FILENAME = "object_catalog.csv"
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
 
 
@@ -31,6 +38,17 @@ def positive_float(value: str) -> float:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than 0")
     return parsed
+
+
+def sanitize_name(value: str) -> str:
+    """Make a user-provided label safe for filenames."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    return cleaned.strip("._-") or "cluster"
+
+
+def is_auto_input(path: Path | None) -> bool:
+    """Return True when an overlay path flag was provided without a value."""
+    return path == Path(AUTO_INPUT_TOKEN)
 
 
 def build_cutout_url(ra: float, dec: float, size: int, *, fits_format: bool, pxscale: float) -> str:
@@ -45,6 +63,96 @@ def build_cutout_url(ra: float, dec: float, size: int, *, fits_format: bool, pxs
         "https://www.legacysurvey.org/viewer/jpeg-cutout"
         f"?ra={ra}&dec={dec}&size={size}&layer={SURVEY_LAYER}&pixscale={pxscale}&bands=grz"
     )
+
+
+def build_default_ls_catalog_path(output_dir: Path, name: str, ra: float, dec: float, radius_deg: float) -> Path:
+    """Return the default LS DR10 output CSV path."""
+    safe_name = sanitize_name(name)
+    filename = f"ls_dr10_{safe_name}_ra{ra:.5f}_dec{dec:.5f}_r{radius_deg:.5f}.csv"
+    return output_dir / filename
+
+
+def run_helper_script(script_name: str, arguments: list[str], *, allow_failure: bool = False) -> bool:
+    """Run another repository script using the current Python interpreter."""
+    script_path = Path(__file__).with_name(script_name)
+    command = [sys.executable, str(script_path), *arguments]
+    print(f"Running helper: {' '.join(command)}")
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        if allow_failure:
+            print(f"Helper script failed, continuing without it: {script_name}")
+            return False
+        raise SystemExit(f"Helper script failed: {script_name}") from exc
+    return True
+
+
+def ensure_overlay_inputs(
+    *,
+    ra: float,
+    dec: float,
+    name: str,
+    catalog_csv: Path | None,
+    brightest_csv: Path | None,
+) -> tuple[Path | None, Path | None]:
+    """Resolve overlay inputs, auto-generating missing catalogs when requested."""
+    resolved_catalog_csv = catalog_csv
+    resolved_brightest_csv = brightest_csv
+    default_output_dir = Path(name).expanduser().resolve()
+
+    if is_auto_input(catalog_csv):
+        default_output_dir.mkdir(parents=True, exist_ok=True)
+        resolved_catalog_csv = default_output_dir / DESI_OBJECT_CATALOG_FILENAME
+        if not resolved_catalog_csv.exists():
+            run_helper_script(
+                "desi_download_spectra.py",
+                [
+                    "--ra",
+                    str(ra),
+                    "--dec",
+                    str(dec),
+                    "--radius",
+                    str(DEFAULT_AUTO_DESI_RADIUS_DEG),
+                    "--output",
+                    str(default_output_dir),
+                    "--overwrite",
+                ],
+                allow_failure=True,
+            )
+        if not resolved_catalog_csv.exists():
+            print(
+                "DESI auto catalog was not created. "
+                "Continuing without DESI markers."
+            )
+            resolved_catalog_csv = None
+
+    if is_auto_input(brightest_csv):
+        default_output_dir.mkdir(parents=True, exist_ok=True)
+        resolved_brightest_csv = build_default_ls_catalog_path(
+            default_output_dir,
+            name,
+            ra,
+            dec,
+            DEFAULT_AUTO_LS_RADIUS_DEG,
+        )
+        if not resolved_brightest_csv.exists():
+            run_helper_script(
+                "ls_dr10_catalog_download.py",
+                [
+                    "--ra",
+                    str(ra),
+                    "--dec",
+                    str(dec),
+                    "--name",
+                    name,
+                    "--output-dir",
+                    str(default_output_dir),
+                ],
+            )
+        if not resolved_brightest_csv.exists():
+            raise SystemExit(f"Expected LS catalog was not created: {resolved_brightest_csv}")
+
+    return resolved_catalog_csv, resolved_brightest_csv
 
 
 def download_file(url: str, destination: Path) -> None:
@@ -376,6 +484,7 @@ def download_decal_image(
     brightest_csv: Path | None = None,
     brightest_count: int = DEFAULT_BRIGHTEST_COUNT,
     label_chars: int = 3,
+    overwrite: bool = False,
 ) -> Path:
     """Download a DECaLS cutout as a JPEG or a DS9-friendly FITS file."""
     size = int(BASE_IMAGE_SIZE / fraction_size)
@@ -405,6 +514,10 @@ def download_decal_image(
         catalog_csv=catalog_csv,
         brightest_csv=brightest_csv,
     )
+    if output_path.exists() and not overwrite:
+        print(f"Output already exists, skipping download: {output_path}")
+        return output_path
+
     temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
     temp_path = Path(temp_file.name)
     temp_file.close()
@@ -472,18 +585,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--catalog-csv",
+        nargs="?",
         type=Path,
+        const=Path(AUTO_INPUT_TOKEN),
         help=(
             "Path to object_catalog.csv from desi_download_spectra.py. "
-            "When provided, the JPEG output marks all catalog objects using their sky offsets from the image center."
+            "If you provide the flag without a value, the script auto-creates the default DESI catalog in <name>/."
         ),
     )
     parser.add_argument(
         "--brightest-csv",
+        nargs="?",
         type=Path,
+        const=Path(AUTO_INPUT_TOKEN),
         help=(
             "CSV file produced by ls_dr10_catalog_download.py. "
-            "When provided, the JPEG output marks the brightest sources by mag_i."
+            "If you provide the flag without a value, the script auto-creates the default LS catalog in <name>/."
         ),
     )
     parser.add_argument(
@@ -498,6 +615,11 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Number of leading sparcl_id characters to show beside each marker (default: 3).",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Recreate the final JPEG even if it already exists.",
+    )
     return parser.parse_args()
 
 
@@ -508,6 +630,27 @@ def main() -> None:
     if args.brightest_count <= 0:
         raise SystemExit("--brightest-count must be greater than 0")
 
+    catalog_csv = args.catalog_csv.expanduser().resolve() if args.catalog_csv and not is_auto_input(args.catalog_csv) else args.catalog_csv
+    brightest_csv = args.brightest_csv.expanduser().resolve() if args.brightest_csv and not is_auto_input(args.brightest_csv) else args.brightest_csv
+    catalog_csv, brightest_csv = ensure_overlay_inputs(
+        ra=args.ra,
+        dec=args.dec,
+        name=args.name,
+        catalog_csv=catalog_csv,
+        brightest_csv=brightest_csv,
+    )
+
+    if not args.fits:
+        planned_output_path = build_jpeg_output_path(
+            index=args.index,
+            name=args.name,
+            catalog_csv=catalog_csv,
+            brightest_csv=brightest_csv,
+        )
+        if planned_output_path.exists() and not args.overwrite:
+            print(f"Output already exists, skipping download: {planned_output_path}")
+            return
+
     download_decal_image(
         args.index,
         args.ra,
@@ -517,10 +660,11 @@ def main() -> None:
         fraction_size=args.fraction_size,
         fits_format=args.fits,
         keep_raw_fits=args.keep_raw_fits,
-        catalog_csv=args.catalog_csv.expanduser().resolve() if args.catalog_csv else None,
-        brightest_csv=args.brightest_csv.expanduser().resolve() if args.brightest_csv else None,
+        catalog_csv=catalog_csv,
+        brightest_csv=brightest_csv,
         brightest_count=args.brightest_count,
         label_chars=args.label_chars,
+        overwrite=args.overwrite,
     )
 
 
